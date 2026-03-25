@@ -534,7 +534,7 @@
             }
 
             // Update balls
-            for (let i = 0; i < MAX_BALLS; i++) {
+            for (let i = 0; i < ballPool.length; i++) {
                 const b = ballPool[i];
                 if (!b.active) continue;
 
@@ -838,7 +838,7 @@
             }
 
             // Draw balls
-            for (let i = 0; i < MAX_BALLS; i++) {
+            for (let i = 0; i < ballPool.length; i++) {
                 const b = ballPool[i];
                 if (!b.active) continue;
 
