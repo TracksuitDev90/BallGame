@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ball Drop Game</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: #1a1a2e;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            overflow: hidden;
+        }
+
+        #gameContainer {
+            position: relative;
+            width: 480px;
+        }
+
+        #header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px 20px;
+            color: #eee;
+        }
+
+        #score {
+            font-size: 24px;
+            font-weight: bold;
+        }
+
+        #nextBall {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 14px;
+            color: #aaa;
+        }
+
+        #nextBallPreview {
+            width: 30px;
+            height: 30px;
+            border-radius: 50%;
+        }
+
+        canvas {
+            display: block;
+            border: 2px solid #16213e;
+            border-radius: 0 0 12px 12px;
+            background: #0f3460;
+            cursor: pointer;
+        }
+
+        #gameOver {
+            display: none;
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0, 0, 0, 0.85);
+            color: white;
+            padding: 40px;
+            border-radius: 16px;
+            text-align: center;
+            z-index: 10;
+        }
+
+        #gameOver h2 {
+            font-size: 32px;
+            margin-bottom: 10px;
+        }
+
+        #gameOver p {
+            font-size: 20px;
+            margin-bottom: 20px;
+            color: #aaa;
+        }
+
+        #restartBtn {
+            padding: 12px 32px;
+            font-size: 18px;
+            border: none;
+            border-radius: 8px;
+            background: #e94560;
+            color: white;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        #restartBtn:hover {
+            background: #c73652;
+        }
+
+        #dropLine {
+            position: absolute;
+            top: 50px;
+            left: 0;
+            width: 100%;
+            height: 2px;
+            background: rgba(255, 255, 255, 0.15);
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="gameContainer">
+        <div id="header">
+            <div id="score">Score: 0</div>
+            <div id="nextBall">
+                Next: <div id="nextBallPreview"></div>
+            </div>
+        </div>
+        <div id="dropLine"></div>
+        <canvas id="gameCanvas" width="480" height="640"></canvas>
+        <div id="gameOver">
+            <h2>Game Over!</h2>
+            <p>Score: <span id="finalScore">0</span></p>
+            <button id="restartBtn">Play Again</button>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const scoreEl = document.getElementById('score');
+        const nextBallPreview = document.getElementById('nextBallPreview');
+        const gameOverEl = document.getElementById('gameOver');
+        const finalScoreEl = document.getElementById('finalScore');
+        const restartBtn = document.getElementById('restartBtn');
+
+        const BALL_TYPES = [
+            { radius: 12, color: '#ff6b6b', points: 1 },
+            { radius: 18, color: '#ffa502', points: 2 },
+            { radius: 24, color: '#ffdd59', points: 4 },
+            { radius: 30, color: '#7bed9f', points: 8 },
+            { radius: 36, color: '#70a1ff', points: 16 },
+            { radius: 42, color: '#5352ed', points: 32 },
+            { radius: 50, color: '#ff4757', points: 64 },
+            { radius: 58, color: '#2ed573', points: 128 },
+            { radius: 68, color: '#1e90ff', points: 256 },
+            { radius: 78, color: '#ffd700', points: 512 },
+            { radius: 90, color: '#ff6348', points: 1024 },
+        ];
+
+        const GRAVITY = 0.4;
+        const FRICTION = 0.99;
+        const BOUNCE = 0.5;
+        const GAME_OVER_LINE = 60;
+        const DROP_COOLDOWN = 500;
+
+        let balls = [];
+        let score = 0;
+        let gameOver = false;
+        let currentType = 0;
+        let nextType = 0;
+        let mouseX = canvas.width / 2;
+        let canDrop = true;
+        let lastDropTime = 0;
+        let mergeAnimations = [];
+
+        function randomSmallType() {
+            return Math.floor(Math.random() * 5);
+        }
+
+        function init() {
+            balls = [];
+            score = 0;
+            gameOver = false;
+            canDrop = true;
+            mergeAnimations = [];
+            currentType = randomSmallType();
+            nextType = randomSmallType();
+            updateUI();
+            gameOverEl.style.display = 'none';
+            loop();
+        }
+
+        function updateUI() {
+            scoreEl.textContent = `Score: ${score}`;
+            const nt = BALL_TYPES[nextType];
+            nextBallPreview.style.background = nt.color;
+            nextBallPreview.style.width = `${Math.min(30, nt.radius)}px`;
+            nextBallPreview.style.height = `${Math.min(30, nt.radius)}px`;
+        }
+
+        function createBall(x, y, type) {
+            return {
+                x, y,
+                vx: 0, vy: 0,
+                type,
+                radius: BALL_TYPES[type].radius,
+                color: BALL_TYPES[type].color,
+                settled: false,
+                settledFrames: 0,
+            };
+        }
+
+        function dropBall() {
+            if (!canDrop || gameOver) return;
+            const now = Date.now();
+            if (now - lastDropTime < DROP_COOLDOWN) return;
+
+            const r = BALL_TYPES[currentType].radius;
+            const x = Math.max(r, Math.min(canvas.width - r, mouseX));
+            const ball = createBall(x, r, currentType);
+            balls.push(ball);
+
+            currentType = nextType;
+            nextType = randomSmallType();
+            lastDropTime = now;
+            updateUI();
+        }
+
+        function distance(a, b) {
+            const dx = a.x - b.x;
+            const dy = a.y - b.y;
+            return Math.sqrt(dx * dx + dy * dy);
+        }
+
+        function resolveBallCollision(a, b) {
+            const dx = b.x - a.x;
+            const dy = b.y - a.y;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            const minDist = a.radius + b.radius;
+
+            if (dist < minDist && dist > 0) {
+                const nx = dx / dist;
+                const ny = dy / dist;
+                const overlap = minDist - dist;
+
+                a.x -= nx * overlap * 0.5;
+                a.y -= ny * overlap * 0.5;
+                b.x += nx * overlap * 0.5;
+                b.y += ny * overlap * 0.5;
+
+                const dvx = a.vx - b.vx;
+                const dvy = a.vy - b.vy;
+                const dvn = dvx * nx + dvy * ny;
+
+                if (dvn > 0) {
+                    a.vx -= dvn * nx * BOUNCE;
+                    a.vy -= dvn * ny * BOUNCE;
+                    b.vx += dvn * nx * BOUNCE;
+                    b.vy += dvn * ny * BOUNCE;
+                }
+
+                return true;
+            }
+            return false;
+        }
+
+        function checkMerge(a, b) {
+            if (a.type !== b.type) return false;
+            if (a.type >= BALL_TYPES.length - 1) return false;
+
+            const dist = distance(a, b);
+            if (dist < a.radius + b.radius) {
+                const newType = a.type + 1;
+                const newBall = createBall(
+                    (a.x + b.x) / 2,
+                    (a.y + b.y) / 2,
+                    newType
+                );
+                newBall.vy = -2;
+
+                balls = balls.filter(ball => ball !== a && ball !== b);
+                balls.push(newBall);
+
+                score += BALL_TYPES[newType].points;
+                updateUI();
+
+                mergeAnimations.push({
+                    x: newBall.x,
+                    y: newBall.y,
+                    radius: newBall.radius,
+                    color: newBall.color,
+                    alpha: 1,
+                    scale: 1.5,
+                });
+
+                return true;
+            }
+            return false;
+        }
+
+        function update() {
+            if (gameOver) return;
+
+            for (const ball of balls) {
+                ball.vy += GRAVITY;
+                ball.vx *= FRICTION;
+                ball.vy *= FRICTION;
+                ball.x += ball.vx;
+                ball.y += ball.vy;
+
+                // Wall collisions
+                if (ball.x - ball.radius < 0) {
+                    ball.x = ball.radius;
+                    ball.vx = Math.abs(ball.vx) * BOUNCE;
+                }
+                if (ball.x + ball.radius > canvas.width) {
+                    ball.x = canvas.width - ball.radius;
+                    ball.vx = -Math.abs(ball.vx) * BOUNCE;
+                }
+
+                // Floor collision
+                if (ball.y + ball.radius > canvas.height) {
+                    ball.y = canvas.height - ball.radius;
+                    ball.vy = -Math.abs(ball.vy) * BOUNCE;
+                    if (Math.abs(ball.vy) < 1) ball.vy = 0;
+                }
+            }
+
+            // Ball-ball collisions and merges
+            let merged;
+            do {
+                merged = false;
+                for (let i = 0; i < balls.length; i++) {
+                    for (let j = i + 1; j < balls.length; j++) {
+                        if (checkMerge(balls[i], balls[j])) {
+                            merged = true;
+                            break;
+                        }
+                        resolveBallCollision(balls[i], balls[j]);
+                    }
+                    if (merged) break;
+                }
+            } while (merged);
+
+            // Check game over - balls above the line for too long
+            for (const ball of balls) {
+                if (ball.y - ball.radius < GAME_OVER_LINE) {
+                    ball.settledFrames++;
+                    if (ball.settledFrames > 120) {
+                        endGame();
+                        return;
+                    }
+                } else {
+                    ball.settledFrames = 0;
+                }
+            }
+
+            // Update merge animations
+            mergeAnimations = mergeAnimations.filter(anim => {
+                anim.alpha -= 0.03;
+                anim.scale += 0.05;
+                return anim.alpha > 0;
+            });
+        }
+
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // Draw game over line
+            ctx.strokeStyle = 'rgba(255, 69, 96, 0.3)';
+            ctx.lineWidth = 1;
+            ctx.setLineDash([8, 8]);
+            ctx.beginPath();
+            ctx.moveTo(0, GAME_OVER_LINE);
+            ctx.lineTo(canvas.width, GAME_OVER_LINE);
+            ctx.stroke();
+            ctx.setLineDash([]);
+
+            // Draw drop preview
+            if (!gameOver) {
+                const r = BALL_TYPES[currentType].radius;
+                const previewX = Math.max(r, Math.min(canvas.width - r, mouseX));
+                ctx.globalAlpha = 0.3;
+                ctx.beginPath();
+                ctx.arc(previewX, r, r, 0, Math.PI * 2);
+                ctx.fillStyle = BALL_TYPES[currentType].color;
+                ctx.fill();
+                ctx.globalAlpha = 1;
+
+                // Drop guide line
+                ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
+                ctx.lineWidth = 1;
+                ctx.setLineDash([4, 4]);
+                ctx.beginPath();
+                ctx.moveTo(previewX, r * 2);
+                ctx.lineTo(previewX, canvas.height);
+                ctx.stroke();
+                ctx.setLineDash([]);
+            }
+
+            // Draw balls
+            for (const ball of balls) {
+                // Shadow
+                ctx.beginPath();
+                ctx.arc(ball.x + 2, ball.y + 2, ball.radius, 0, Math.PI * 2);
+                ctx.fillStyle = 'rgba(0, 0, 0, 0.2)';
+                ctx.fill();
+
+                // Ball
+                const gradient = ctx.createRadialGradient(
+                    ball.x - ball.radius * 0.3, ball.y - ball.radius * 0.3, ball.radius * 0.1,
+                    ball.x, ball.y, ball.radius
+                );
+                gradient.addColorStop(0, '#fff');
+                gradient.addColorStop(0.3, ball.color);
+                gradient.addColorStop(1, ball.color);
+                ctx.beginPath();
+                ctx.arc(ball.x, ball.y, ball.radius, 0, Math.PI * 2);
+                ctx.fillStyle = gradient;
+                ctx.fill();
+
+                // Type number
+                ctx.fillStyle = '#fff';
+                ctx.font = `bold ${Math.max(12, ball.radius * 0.6)}px sans-serif`;
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(ball.type + 1, ball.x, ball.y);
+            }
+
+            // Draw merge animations
+            for (const anim of mergeAnimations) {
+                ctx.globalAlpha = anim.alpha;
+                ctx.beginPath();
+                ctx.arc(anim.x, anim.y, anim.radius * anim.scale, 0, Math.PI * 2);
+                ctx.strokeStyle = anim.color;
+                ctx.lineWidth = 3;
+                ctx.stroke();
+                ctx.globalAlpha = 1;
+            }
+        }
+
+        function endGame() {
+            gameOver = true;
+            finalScoreEl.textContent = score;
+            gameOverEl.style.display = 'block';
+        }
+
+        function loop() {
+            update();
+            draw();
+            if (!gameOver) {
+                requestAnimationFrame(loop);
+            }
+        }
+
+        // Events
+        canvas.addEventListener('mousemove', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            mouseX = e.clientX - rect.left;
+        });
+
+        canvas.addEventListener('click', () => {
+            dropBall();
+        });
+
+        canvas.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            const rect = canvas.getBoundingClientRect();
+            mouseX = e.touches[0].clientX - rect.left;
+        });
+
+        canvas.addEventListener('touchmove', (e) => {
+            e.preventDefault();
+            const rect = canvas.getBoundingClientRect();
+            mouseX = e.touches[0].clientX - rect.left;
+        });
+
+        canvas.addEventListener('touchend', (e) => {
+            e.preventDefault();
+            dropBall();
+        });
+
+        restartBtn.addEventListener('click', () => {
+            init();
+        });
+
+        init();
+    </script>
+</body>
+</html>
