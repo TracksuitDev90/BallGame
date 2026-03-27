@@ -239,27 +239,69 @@
             }
         }
 
-        function assignBucketColors() {
-            // Assign colors based on what's needed in the grid
+        function getActiveGridColors() {
             const needed = new Set();
             for (const brick of bricks) {
-                if (brick.active) needed.add(brick.colorName);
+                if (brick.active && brick.popTimer <= 0) needed.add(brick.colorName);
             }
+            return needed;
+        }
+
+        function assignBucketColors() {
+            // Assign colors based on what's actually in the grid
+            const needed = getActiveGridColors();
             const available = [...needed];
             bucketColors = [];
-            // Pick up to 4 unique colors from what's needed
+            // Pick up to NUM_BUCKETS unique colors from what's needed
             while (bucketColors.length < NUM_BUCKETS && available.length > 0) {
                 const idx = Math.floor(Math.random() * available.length);
                 bucketColors.push(available.splice(idx, 1)[0]);
             }
-            // Fill remaining with random colors
+            // If fewer colors exist than buckets, duplicate from needed
             while (bucketColors.length < NUM_BUCKETS) {
-                bucketColors.push(COLOR_NAMES[Math.floor(Math.random() * COLOR_NAMES.length)]);
+                const fromNeeded = [...needed];
+                if (fromNeeded.length > 0) {
+                    bucketColors.push(fromNeeded[Math.floor(Math.random() * fromNeeded.length)]);
+                } else {
+                    bucketColors.push(COLOR_NAMES[Math.floor(Math.random() * COLOR_NAMES.length)]);
+                }
             }
             // Update bucket colors
             for (let i = 0; i < buckets.length; i++) {
                 buckets[i].colorName = bucketColors[i];
                 buckets[i].color = COLORS[bucketColors[i]].pastel;
+            }
+        }
+
+        function checkColorCleared() {
+            // Check if any bucket's color no longer exists in the grid
+            const activeColors = getActiveGridColors();
+            if (activeColors.size === 0) return;
+
+            for (let i = 0; i < buckets.length; i++) {
+                if (!activeColors.has(buckets[i].colorName)) {
+                    // This color was fully cleared — find a replacement
+                    // Prefer colors not already assigned to another bucket
+                    const currentBucketColors = new Set(buckets.map(b => b.colorName));
+                    let replacement = null;
+                    for (const c of activeColors) {
+                        if (!currentBucketColors.has(c)) {
+                            replacement = c;
+                            break;
+                        }
+                    }
+                    // If all active colors are already in buckets, pick any active color
+                    if (!replacement) {
+                        const arr = [...activeColors];
+                        replacement = arr[Math.floor(Math.random() * arr.length)];
+                    }
+                    buckets[i].colorName = replacement;
+                    buckets[i].color = COLORS[replacement].pastel;
+                    bucketColors[i] = replacement;
+                    // Visual feedback — pulse the bucket
+                    buckets[i].tweenScale = 1.2;
+                    buckets[i].tweenDir = -1;
+                }
             }
         }
 
@@ -687,6 +729,9 @@
                     }
                 }
             }
+
+            // Check if a color was fully cleared — swap bucket
+            checkColorCleared();
 
             // Check row clears
             checkRowCleared();
