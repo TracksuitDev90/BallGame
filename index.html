@@ -327,13 +327,14 @@
             }
         }
 
-        // ─── Rotating Zone ───
-        const ROTOR = {
+        // ─── Track Zone (stadium/pill shape spanning full width) ───
+        const TRACK = {
             get cx() { return W / 2; },
-            get cy() { return s(180); },
-            get radius() { return s(70); },
-            get openingAngle() { return 0.5; }, // radians of opening
+            get cy() { return s(170); },
+            get halfWidth() { return W / 2 - s(20); },  // straight section half-length
+            get radius() { return s(35); },              // end-cap radius
             get wallThickness() { return s(6); },
+            get openingWidth() { return s(40); },        // exit opening at bottom center
         };
 
         // ─── Bricks Grid ───
@@ -512,30 +513,50 @@
         const BALL_RADIUS = 4;
         const BOUNCE_DAMP = 0.6;
 
-        function pointInRotorWall(x, y) {
-            const dx = x - ROTOR.cx;
-            const dy = y - ROTOR.cy;
-            const dist = Math.sqrt(dx * dx + dy * dy);
-            const angle = Math.atan2(dy, dx) - rotatingAngle;
-            const normalizedAngle = ((angle % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
-            const openStart = Math.PI / 2 - ROTOR.openingAngle / 2;
-            const openEnd = Math.PI / 2 + ROTOR.openingAngle / 2;
-            const inOpening = normalizedAngle >= openStart && normalizedAngle <= openEnd;
+        // Stadium shape: two semicircle caps connected by straight top/bottom edges
+        // The "opening" is a gap at the bottom-center where balls exit
+        function trackDistanceInfo(x, y) {
+            const cx = TRACK.cx;
+            const cy = TRACK.cy;
+            const hw = TRACK.halfWidth - TRACK.radius; // half-length of straight section
+            const r = TRACK.radius;
+            const wt = TRACK.wallThickness;
 
-            return {
-                insideOuter: dist < ROTOR.radius + ROTOR.wallThickness,
-                insideInner: dist < ROTOR.radius - ROTOR.wallThickness,
-                onWall: dist >= ROTOR.radius - ROTOR.wallThickness && dist <= ROTOR.radius + ROTOR.wallThickness,
-                inOpening,
-                dist,
-                angle: normalizedAngle,
-            };
+            // Clamp to find nearest point on stadium centerline
+            let nearX, nearY, dist;
+            if (x < cx - hw) {
+                // Left cap
+                const dx = x - (cx - hw);
+                const dy = y - cy;
+                dist = Math.sqrt(dx * dx + dy * dy);
+                nearX = dx; nearY = dy;
+            } else if (x > cx + hw) {
+                // Right cap
+                const dx = x - (cx + hw);
+                const dy = y - cy;
+                dist = Math.sqrt(dx * dx + dy * dy);
+                nearX = dx; nearY = dy;
+            } else {
+                // Straight section — distance is just vertical distance from center
+                dist = Math.abs(y - cy);
+                nearX = 0;
+                nearY = y - cy;
+            }
+
+            // Check if point is in the bottom exit opening
+            const inOpening = (y > cy) && (x > cx - TRACK.openingWidth / 2) && (x < cx + TRACK.openingWidth / 2)
+                && (x >= cx - hw) && (x <= cx + hw);
+
+            const onWall = dist >= r - wt && dist <= r + wt;
+            const inside = dist < r - wt;
+
+            return { dist, onWall, inside, inOpening, nearX, nearY };
         }
 
         function update() {
             if (gameState !== 'playing') return;
 
-            rotatingAngle += 0.008;
+            // Track is static (no rotation needed)
 
             // Screen shake decay
             if (screenShake > 0) {
@@ -614,38 +635,73 @@
                     }
                 }
 
-                // Rotating zone collision
-                const dx = b.x - ROTOR.cx;
-                const dy = b.y - ROTOR.cy;
-                const dist = Math.sqrt(dx * dx + dy * dy);
-                const rotorInfo = pointInRotorWall(b.x, b.y);
+                // Track zone collision (stadium shape)
+                const tInfo = trackDistanceInfo(b.x, b.y);
 
-                if (dist > ROTOR.radius - b.radius && dist < ROTOR.radius + b.radius + ROTOR.wallThickness) {
-                    if (!rotorInfo.inOpening && rotorInfo.onWall) {
-                        // Bounce off wall
-                        const nx = dx / dist;
-                        const ny = dy / dist;
-                        if (dist < ROTOR.radius) {
-                            // Inside, push outward? Actually push inward to contain
-                            b.x = ROTOR.cx + nx * (ROTOR.radius - b.radius - ROTOR.wallThickness);
-                            const dot = b.vx * nx + b.vy * ny;
-                            b.vx -= 2 * dot * nx * BOUNCE_DAMP;
-                            b.vy -= 2 * dot * ny * BOUNCE_DAMP;
+                if (!tInfo.inOpening && tInfo.onWall) {
+                    // Compute normal for bounce
+                    const cx = TRACK.cx;
+                    const cy = TRACK.cy;
+                    const hw = TRACK.halfWidth - TRACK.radius;
+                    let nx, ny;
+
+                    if (b.x < cx - hw) {
+                        // Left cap — normal points from cap center
+                        const cdx = b.x - (cx - hw);
+                        const cdy = b.y - cy;
+                        const cd = Math.sqrt(cdx * cdx + cdy * cdy) || 1;
+                        nx = cdx / cd; ny = cdy / cd;
+                    } else if (b.x > cx + hw) {
+                        // Right cap
+                        const cdx = b.x - (cx + hw);
+                        const cdy = b.y - cy;
+                        const cd = Math.sqrt(cdx * cdx + cdy * cdy) || 1;
+                        nx = cdx / cd; ny = cdy / cd;
+                    } else {
+                        // Straight section — normal is purely vertical
+                        nx = 0;
+                        ny = (b.y > cy) ? 1 : -1;
+                    }
+
+                    // Push ball out of wall
+                    if (tInfo.dist < TRACK.radius) {
+                        // Inside wall, push inward
+                        const target = TRACK.radius - TRACK.wallThickness - b.radius;
+                        if (b.x < cx - hw) {
+                            b.x = (cx - hw) + nx * target;
+                            b.y = cy + ny * target;
+                        } else if (b.x > cx + hw) {
+                            b.x = (cx + hw) + nx * target;
+                            b.y = cy + ny * target;
                         } else {
-                            b.x = ROTOR.cx + nx * (ROTOR.radius + b.radius + ROTOR.wallThickness);
-                            const dot = b.vx * nx + b.vy * ny;
-                            b.vx -= 2 * dot * nx * BOUNCE_DAMP;
-                            b.vy -= 2 * dot * ny * BOUNCE_DAMP;
+                            b.y = cy + ny * target;
+                        }
+                    } else {
+                        // Outside wall, push outward
+                        const target = TRACK.radius + TRACK.wallThickness + b.radius;
+                        if (b.x < cx - hw) {
+                            b.x = (cx - hw) + nx * target;
+                            b.y = cy + ny * target;
+                        } else if (b.x > cx + hw) {
+                            b.x = (cx + hw) + nx * target;
+                            b.y = cy + ny * target;
+                        } else {
+                            b.y = cy + ny * target;
                         }
                     }
+
+                    const dot = b.vx * nx + b.vy * ny;
+                    b.vx -= 2 * dot * nx * BOUNCE_DAMP;
+                    b.vy -= 2 * dot * ny * BOUNCE_DAMP;
                 }
 
-                // Inside rotor - apply gentle swirl
-                if (dist < ROTOR.radius - ROTOR.wallThickness && dist > 0) {
-                    const tangentX = -dy / dist;
-                    const tangentY = dx / dist;
-                    b.vx += tangentX * 0.02 * scale;
-                    b.vy += tangentY * 0.02 * scale;
+                // Inside track — apply gentle horizontal push toward exit
+                if (tInfo.inside) {
+                    // Push balls toward the bottom opening
+                    const toCenterX = TRACK.cx - b.x;
+                    const dist = Math.abs(toCenterX) || 1;
+                    b.vx += (toCenterX / dist) * 0.03 * scale;
+                    b.vy += 0.02 * scale; // nudge downward toward exit
                 }
 
                 // Brick collisions
@@ -822,43 +878,70 @@
                 ctx.globalAlpha = 1;
             }
 
-            // Draw rotating zone
+            // Draw track zone (stadium/pill shape)
             ctx.save();
-            ctx.translate(ROTOR.cx, ROTOR.cy);
-            ctx.rotate(rotatingAngle);
+            const tcx = TRACK.cx;
+            const tcy = TRACK.cy;
+            const thw = TRACK.halfWidth - TRACK.radius; // half straight section
+            const tr = TRACK.radius;
+            const twt = TRACK.wallThickness;
+            const openHalf = TRACK.openingWidth / 2;
 
-            const openStart = Math.PI / 2 - ROTOR.openingAngle / 2;
-            const openEnd = Math.PI / 2 + ROTOR.openingAngle / 2;
+            // Helper to draw the stadium path with bottom opening
+            function drawTrackPath() {
+                ctx.beginPath();
+                // Start from right side of opening, go right along bottom
+                ctx.moveTo(tcx + openHalf, tcy + tr);
+                // Bottom straight right
+                ctx.lineTo(tcx + thw, tcy + tr);
+                // Right semicircle cap (bottom to top)
+                ctx.arc(tcx + thw, tcy, tr, Math.PI / 2, -Math.PI / 2);
+                // Top straight (right to left)
+                ctx.lineTo(tcx - thw, tcy - tr);
+                // Left semicircle cap (top to bottom)
+                ctx.arc(tcx - thw, tcy, tr, -Math.PI / 2, Math.PI / 2);
+                // Bottom straight left
+                ctx.lineTo(tcx - openHalf, tcy + tr);
+            }
 
-            // Outer arc (with gap for opening)
-            ctx.beginPath();
-            ctx.arc(0, 0, ROTOR.radius, openEnd, openStart + Math.PI * 2);
-            ctx.strokeStyle = 'rgba(180, 160, 255, 0.5)';
-            ctx.lineWidth = ROTOR.wallThickness;
+            // Outer glow
+            drawTrackPath();
+            ctx.strokeStyle = 'rgba(180, 160, 255, 0.12)';
+            ctx.lineWidth = twt + s(8);
             ctx.lineCap = 'round';
             ctx.stroke();
 
-            // Inner glow
-            ctx.beginPath();
-            ctx.arc(0, 0, ROTOR.radius, openEnd, openStart + Math.PI * 2);
-            ctx.strokeStyle = 'rgba(180, 160, 255, 0.15)';
-            ctx.lineWidth = ROTOR.wallThickness + s(6);
+            // Main wall
+            drawTrackPath();
+            ctx.strokeStyle = 'rgba(180, 160, 255, 0.5)';
+            ctx.lineWidth = twt;
+            ctx.lineCap = 'round';
             ctx.stroke();
 
-            // Opening indicator arrows
-            ctx.beginPath();
-            const arrowR = ROTOR.radius;
-            const a1x = Math.cos(openStart) * arrowR;
-            const a1y = Math.sin(openStart) * arrowR;
-            const a2x = Math.cos(openEnd) * arrowR;
-            const a2y = Math.sin(openEnd) * arrowR;
+            // Opening indicator dots
             ctx.fillStyle = 'rgba(180, 160, 255, 0.8)';
             ctx.beginPath();
-            ctx.arc(a1x, a1y, s(4), 0, Math.PI * 2);
+            ctx.arc(tcx - openHalf, tcy + tr, s(4), 0, Math.PI * 2);
             ctx.fill();
             ctx.beginPath();
-            ctx.arc(a2x, a2y, s(4), 0, Math.PI * 2);
+            ctx.arc(tcx + openHalf, tcy + tr, s(4), 0, Math.PI * 2);
             ctx.fill();
+
+            // Animated chevrons inside the track to show flow direction
+            ctx.globalAlpha = 0.2;
+            const chevronTime = (Date.now() / 600) % 1;
+            for (let i = 0; i < 3; i++) {
+                const t = ((chevronTime + i / 3) % 1);
+                const cx2 = tcx + thw * (1 - 2 * t);
+                ctx.beginPath();
+                ctx.moveTo(cx2 - s(4), tcy - s(4));
+                ctx.lineTo(cx2 + s(4), tcy);
+                ctx.lineTo(cx2 - s(4), tcy + s(4));
+                ctx.strokeStyle = 'rgba(200, 180, 255, 0.8)';
+                ctx.lineWidth = s(2);
+                ctx.stroke();
+            }
+            ctx.globalAlpha = 1;
 
             ctx.restore();
 
