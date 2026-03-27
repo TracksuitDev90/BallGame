@@ -338,17 +338,17 @@
         };
 
         // ─── Bricks Grid ───
-        const GRID_COLS = 6;
-        const GRID_ROWS_VISIBLE = 5;
+        const GRID_COLS = 5;
+        const GRID_ROWS_VISIBLE = 6;
         const DIVOTS_PER_BRICK = 3;
         let bricks = [];
         let brickW, brickH, gridOffsetX, gridStartY;
 
         function initGrid() {
             bricks = [];
-            brickW = (W - s(20)) / GRID_COLS;
-            brickH = s(55);
-            gridOffsetX = s(10);
+            brickW = (W - s(16)) / GRID_COLS;
+            brickH = s(68);
+            gridOffsetX = s(8);
             gridStartY = H - GRID_ROWS_VISIBLE * brickH - s(10);
 
             for (let row = 0; row < GRID_ROWS_VISIBLE; row++) {
@@ -359,7 +359,7 @@
         function spawnBrickRow(row) {
             // Each row uses a subset of colors
             const rowColors = [];
-            const numColors = 2 + Math.floor(Math.random() * 3); // 2-4 colors per row
+            const numColors = 2 + Math.floor(Math.random() * 2); // 2-3 colors per row
             const available = [...COLOR_NAMES];
             for (let c = 0; c < numColors; c++) {
                 const idx = Math.floor(Math.random() * available.length);
@@ -373,72 +373,94 @@
                     row, col,
                     x: gridOffsetX + col * brickW,
                     y: gridStartY + row * brickH,
-                    w: brickW - s(2),
-                    h: brickH - s(2),
+                    w: brickW - s(3),
+                    h: brickH - s(3),
                     colorName,
                     color: COLORS[colorName].pastel,
                     darkColor: COLORS[colorName].dark,
                     health: DIVOTS_PER_BRICK,
                     maxHealth: DIVOTS_PER_BRICK,
-                    divots: [false, false, false], // 3 slots, false=empty, true=filled
+                    divots: [false, false, false],
                     pulseTimer: 0,
-                    popTimer: 0, // countdown before brick pops after all divots filled
+                    popTimer: 0,
+                    jellyPhase: Math.random() * Math.PI * 2, // jelly wobble offset
                 });
             }
         }
 
         function checkRowCleared() {
-            // Group bricks by row (exclude bricks that are popping)
-            const rows = {};
+            // Check each row: if ALL divots in ALL bricks of a row are filled, row is cleared
+            const rowBricks = {};
             for (const brick of bricks) {
-                if (brick.active && brick.popTimer <= 0) {
-                    if (!rows[brick.row]) rows[brick.row] = 0;
-                    rows[brick.row]++;
-                }
+                if (!brick.active) continue;
+                if (!rowBricks[brick.row]) rowBricks[brick.row] = [];
+                rowBricks[brick.row].push(brick);
             }
 
-            // Find cleared rows (row with 0 active bricks)
-            const allRows = new Set(bricks.map(b => b.row));
             let cleared = false;
-            for (const row of allRows) {
-                if (!rows[row]) {
-                    // Row is cleared
+            for (const row in rowBricks) {
+                const rowArr = rowBricks[row];
+                // A row is "filled" when every brick in it has all divots filled (popping or already done)
+                const allFilled = rowArr.every(b => b.health <= 0);
+                if (allFilled) {
                     cleared = true;
+                    // Mark all bricks in this row for popping if not already
+                    for (const b of rowArr) {
+                        if (b.popTimer <= 0 && b.active) {
+                            b.popTimer = 12;
+                        }
+                    }
                 }
             }
 
-            if (cleared) {
-                // Remove all inactive bricks from cleared rows
-                bricks = bricks.filter(b => b.active);
+            // Remove fully popped bricks
+            const hadPops = bricks.some(b => !b.active);
+            bricks = bricks.filter(b => b.active);
 
-                // Shift remaining bricks down
-                if (bricks.length > 0) {
-                    // Recalculate rows
-                    const uniqueRows = [...new Set(bricks.map(b => b.row))].sort((a, b) => a - b);
-                    for (let i = 0; i < uniqueRows.length; i++) {
+            if (cleared || hadPops) {
+                // Check if any rows are now completely gone
+                const remainingRows = new Set(bricks.map(b => b.row));
+                const sortedRows = [...remainingRows].sort((a, b) => a - b);
+
+                // Compact rows: reassign row indices to be contiguous from bottom
+                if (sortedRows.length > 0) {
+                    // Remap rows so they stack from bottom
+                    const maxRow = GRID_ROWS_VISIBLE - 1;
+                    const offset = maxRow - (sortedRows.length - 1);
+                    for (let i = 0; i < sortedRows.length; i++) {
+                        const oldRow = sortedRows[i];
+                        const newRow = offset + i;
                         for (const brick of bricks) {
-                            if (brick.row === uniqueRows[i]) {
-                                brick.row = i;
-                                brick.y = gridStartY + i * brickH;
+                            if (brick.row === oldRow) {
+                                brick.row = newRow;
+                                brick.y = gridStartY + newRow * brickH;
                             }
                         }
                     }
                 }
 
-                // Spawn new row at top (shift existing down, add at row 0)
-                // First shift all existing rows down by 1
-                for (const brick of bricks) {
-                    brick.row++;
-                    brick.y = gridStartY + brick.row * brickH;
+                // If we have fewer rows than GRID_ROWS_VISIBLE, spawn new rows at top and push down
+                const currentRowCount = new Set(bricks.map(b => b.row)).size;
+                const rowsToAdd = GRID_ROWS_VISIBLE - currentRowCount;
+
+                if (rowsToAdd > 0) {
+                    // Push all existing bricks down by rowsToAdd
+                    for (const brick of bricks) {
+                        brick.row += rowsToAdd;
+                        brick.y = gridStartY + brick.row * brickH;
+                    }
+                    // Spawn new rows at the top
+                    for (let r = 0; r < rowsToAdd; r++) {
+                        spawnBrickRow(r);
+                    }
+
+                    level++;
+                    score += 100 * level;
+                    screenShake = 10;
+
+                    // Reassign bucket colors based on new grid
+                    assignBucketColors();
                 }
-                spawnBrickRow(0);
-
-                level++;
-                score += 100 * level;
-                screenShake = 10;
-
-                // Reassign bucket colors based on new grid
-                assignBucketColors();
             }
 
             // Check game over: if any brick goes below screen
@@ -945,82 +967,204 @@
 
             ctx.restore();
 
-            // Draw bricks
+            // Draw bricks (jelly style with deep divots)
+            const now = Date.now() / 1000;
             for (const brick of bricks) {
                 if (!brick.active) continue;
 
                 ctx.save();
-                // Pop animation — brick scales up then disappears
+                // Pop animation
                 let popScale = 1;
                 if (brick.popTimer > 0) {
                     popScale = 1 + (1 - brick.popTimer / 12) * 0.3;
                     ctx.globalAlpha = brick.popTimer / 12;
                 }
-                const pulse = brick.pulseTimer > 0 ? 1 + Math.sin(brick.pulseTimer * 0.8) * 0.08 : 1;
-                const totalScale = pulse * popScale;
-                if (totalScale !== 1) {
-                    const bcx = brick.x + brick.w / 2;
-                    const bcy = brick.y + brick.h / 2;
+                // Jelly wobble — subtle continuous squash/stretch
+                const jellyT = now * 2.5 + brick.jellyPhase;
+                const jellyX = 1 + Math.sin(jellyT) * 0.015;
+                const jellyY = 1 + Math.cos(jellyT) * 0.015;
+                const pulse = brick.pulseTimer > 0 ? 1 + Math.sin(brick.pulseTimer * 0.8) * 0.10 : 1;
+                const totalScaleX = pulse * popScale * jellyX;
+                const totalScaleY = pulse * popScale * jellyY;
+                const bcx = brick.x + brick.w / 2;
+                const bcy = brick.y + brick.h / 2;
+                if (totalScaleX !== 1 || totalScaleY !== 1) {
                     ctx.translate(bcx, bcy);
-                    ctx.scale(totalScale, totalScale);
+                    ctx.scale(totalScaleX, totalScaleY);
                     ctx.translate(-bcx, -bcy);
                 }
 
-                // Brick body
-                drawRoundRect(brick.x, brick.y, brick.w, brick.h, s(6));
+                const brickR = s(12); // more rounded for jelly feel
+
+                // Outer glow / soft shadow beneath brick
+                ctx.shadowColor = brick.darkColor;
+                ctx.shadowBlur = s(8);
+                ctx.shadowOffsetX = 0;
+                ctx.shadowOffsetY = s(3);
+                drawRoundRect(brick.x, brick.y, brick.w, brick.h, brickR);
+                ctx.fillStyle = 'rgba(0,0,0,0)';
+                ctx.fill();
+                ctx.shadowColor = 'transparent';
+                ctx.shadowBlur = 0;
+                ctx.shadowOffsetX = 0;
+                ctx.shadowOffsetY = 0;
+
+                // Brick body — jelly gradient (lighter at top, saturated middle, darker bottom)
+                drawRoundRect(brick.x, brick.y, brick.w, brick.h, brickR);
                 const brickGrad = ctx.createLinearGradient(brick.x, brick.y, brick.x, brick.y + brick.h);
                 brickGrad.addColorStop(0, brick.color);
+                brickGrad.addColorStop(0.35, brick.color);
+                brickGrad.addColorStop(0.7, brick.darkColor);
                 brickGrad.addColorStop(1, brick.darkColor);
                 ctx.fillStyle = brickGrad;
                 ctx.fill();
 
-                // Subtle border
-                ctx.strokeStyle = 'rgba(0,0,0,0.2)';
-                ctx.lineWidth = s(1);
+                // Semi-transparent overlay for jelly translucency
+                drawRoundRect(brick.x, brick.y, brick.w, brick.h, brickR);
+                const jellyOverlay = ctx.createLinearGradient(brick.x, brick.y, brick.x + brick.w, brick.y + brick.h);
+                jellyOverlay.addColorStop(0, 'rgba(255,255,255,0.18)');
+                jellyOverlay.addColorStop(0.5, 'rgba(255,255,255,0.0)');
+                jellyOverlay.addColorStop(1, 'rgba(0,0,0,0.1)');
+                ctx.fillStyle = jellyOverlay;
+                ctx.fill();
+
+                // Glossy highlight bubble on top-left
+                ctx.save();
+                ctx.beginPath();
+                drawRoundRect(brick.x, brick.y, brick.w, brick.h, brickR);
+                ctx.clip();
+                const glossX = brick.x + brick.w * 0.25;
+                const glossY = brick.y + brick.h * 0.2;
+                const glossR = brick.w * 0.35;
+                const gloss = ctx.createRadialGradient(glossX, glossY, 0, glossX, glossY, glossR);
+                gloss.addColorStop(0, 'rgba(255,255,255,0.45)');
+                gloss.addColorStop(0.6, 'rgba(255,255,255,0.1)');
+                gloss.addColorStop(1, 'rgba(255,255,255,0)');
+                ctx.fillStyle = gloss;
+                ctx.beginPath();
+                ctx.arc(glossX, glossY, glossR, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.restore();
+
+                // Soft inner border (jelly edge highlight)
+                drawRoundRect(brick.x + s(1.5), brick.y + s(1.5), brick.w - s(3), brick.h - s(3), brickR - s(1));
+                ctx.strokeStyle = 'rgba(255,255,255,0.2)';
+                ctx.lineWidth = s(1.5);
                 ctx.stroke();
 
-                // Shine
-                ctx.fillStyle = 'rgba(255,255,255,0.12)';
-                ctx.fillRect(brick.x + s(3), brick.y + s(3), brick.w - s(6), brick.h * 0.3);
+                // Outer border
+                drawRoundRect(brick.x, brick.y, brick.w, brick.h, brickR);
+                ctx.strokeStyle = 'rgba(0,0,0,0.25)';
+                ctx.lineWidth = s(1.5);
+                ctx.stroke();
 
-                // Draw divots (3 recessed circles)
-                const divotRadius = s(8);
-                const divotY = brick.y + brick.h * 0.6;
+                // Draw divots — deep physical recesses
+                const divotRadius = s(11);
+                const divotY = brick.y + brick.h * 0.58;
                 const divotSpacing = brick.w / (DIVOTS_PER_BRICK + 1);
                 for (let d = 0; d < DIVOTS_PER_BRICK; d++) {
                     const divotX = brick.x + divotSpacing * (d + 1);
 
                     if (brick.divots[d]) {
-                        // Filled divot — ball sitting in it, raised look
+                        // ── Filled divot: ball seated in a physical recess ──
+
+                        // Draw the rim/crater around the ball
+                        ctx.beginPath();
+                        ctx.arc(divotX, divotY, divotRadius + s(2), 0, Math.PI * 2);
+                        const rimGrad = ctx.createRadialGradient(
+                            divotX, divotY, divotRadius - s(1),
+                            divotX, divotY, divotRadius + s(2)
+                        );
+                        rimGrad.addColorStop(0, 'rgba(0,0,0,0.3)');
+                        rimGrad.addColorStop(1, 'rgba(0,0,0,0)');
+                        ctx.fillStyle = rimGrad;
+                        ctx.fill();
+
+                        // Ball body — raised sphere look
                         const ballGrad = ctx.createRadialGradient(
-                            divotX - divotRadius * 0.3, divotY - divotRadius * 0.3, 0,
+                            divotX - divotRadius * 0.3, divotY - divotRadius * 0.35, divotRadius * 0.1,
                             divotX, divotY, divotRadius
                         );
                         ballGrad.addColorStop(0, '#fff');
-                        ballGrad.addColorStop(0.4, brick.color);
-                        ballGrad.addColorStop(1, brick.darkColor);
+                        ballGrad.addColorStop(0.25, brick.color);
+                        ballGrad.addColorStop(0.8, brick.darkColor);
+                        ballGrad.addColorStop(1, 'rgba(0,0,0,0.3)');
                         ctx.beginPath();
                         ctx.arc(divotX, divotY, divotRadius, 0, Math.PI * 2);
                         ctx.fillStyle = ballGrad;
                         ctx.fill();
-                        // Bright rim to show it's raised
-                        ctx.strokeStyle = 'rgba(255,255,255,0.5)';
-                        ctx.lineWidth = s(1.5);
-                        ctx.stroke();
+
+                        // Specular highlight on ball
+                        const specGrad = ctx.createRadialGradient(
+                            divotX - divotRadius * 0.25, divotY - divotRadius * 0.3, 0,
+                            divotX - divotRadius * 0.25, divotY - divotRadius * 0.3, divotRadius * 0.45
+                        );
+                        specGrad.addColorStop(0, 'rgba(255,255,255,0.7)');
+                        specGrad.addColorStop(1, 'rgba(255,255,255,0)');
+                        ctx.beginPath();
+                        ctx.arc(divotX - divotRadius * 0.25, divotY - divotRadius * 0.3, divotRadius * 0.45, 0, Math.PI * 2);
+                        ctx.fillStyle = specGrad;
+                        ctx.fill();
+
+                        // Bottom shadow under ball
+                        ctx.beginPath();
+                        ctx.ellipse(divotX, divotY + divotRadius * 0.6, divotRadius * 0.6, divotRadius * 0.2, 0, 0, Math.PI * 2);
+                        ctx.fillStyle = 'rgba(0,0,0,0.15)';
+                        ctx.fill();
+
                     } else {
-                        // Empty divot — recessed shadow circle
-                        const recess = ctx.createRadialGradient(
-                            divotX, divotY, divotRadius * 0.2,
+                        // ── Empty divot: deep physical recess ──
+
+                        // Outer lip / raised rim (light on top-left, dark on bottom-right)
+                        ctx.beginPath();
+                        ctx.arc(divotX, divotY, divotRadius + s(2.5), 0, Math.PI * 2);
+                        const lipGrad = ctx.createLinearGradient(
+                            divotX - divotRadius, divotY - divotRadius,
+                            divotX + divotRadius, divotY + divotRadius
+                        );
+                        lipGrad.addColorStop(0, 'rgba(255,255,255,0.25)');
+                        lipGrad.addColorStop(0.5, 'rgba(0,0,0,0.05)');
+                        lipGrad.addColorStop(1, 'rgba(0,0,0,0.25)');
+                        ctx.fillStyle = lipGrad;
+                        ctx.fill();
+
+                        // Inner cavity — dark gradient to simulate depth
+                        const cavityGrad = ctx.createRadialGradient(
+                            divotX + divotRadius * 0.15, divotY + divotRadius * 0.15, 0,
                             divotX, divotY, divotRadius
                         );
-                        recess.addColorStop(0, 'rgba(0,0,0,0.35)');
-                        recess.addColorStop(1, 'rgba(0,0,0,0.08)');
+                        cavityGrad.addColorStop(0, 'rgba(0,0,0,0.5)');
+                        cavityGrad.addColorStop(0.6, 'rgba(0,0,0,0.3)');
+                        cavityGrad.addColorStop(1, brick.darkColor);
                         ctx.beginPath();
                         ctx.arc(divotX, divotY, divotRadius, 0, Math.PI * 2);
-                        ctx.fillStyle = recess;
+                        ctx.fillStyle = cavityGrad;
                         ctx.fill();
-                        // Inner ring
-                        ctx.strokeStyle = 'rgba(0,0,0,0.15)';
+
+                        // Inner concave highlight (light crescent at top to show curvature)
+                        const innerHighlight = ctx.createRadialGradient(
+                            divotX - divotRadius * 0.2, divotY - divotRadius * 0.3, 0,
+                            divotX, divotY, divotRadius * 0.9
+                        );
+                        innerHighlight.addColorStop(0, 'rgba(255,255,255,0.15)');
+                        innerHighlight.addColorStop(0.4, 'rgba(255,255,255,0.03)');
+                        innerHighlight.addColorStop(1, 'rgba(0,0,0,0)');
+                        ctx.beginPath();
+                        ctx.arc(divotX, divotY, divotRadius * 0.85, 0, Math.PI * 2);
+                        ctx.fillStyle = innerHighlight;
+                        ctx.fill();
+
+                        // Beveled inner ring
+                        ctx.beginPath();
+                        ctx.arc(divotX, divotY, divotRadius, 0, Math.PI * 2);
+                        ctx.strokeStyle = 'rgba(0,0,0,0.35)';
+                        ctx.lineWidth = s(2);
+                        ctx.stroke();
+
+                        // Thin light edge on top half for bevel effect
+                        ctx.beginPath();
+                        ctx.arc(divotX, divotY, divotRadius - s(1), -Math.PI * 0.8, -Math.PI * 0.2);
+                        ctx.strokeStyle = 'rgba(255,255,255,0.15)';
                         ctx.lineWidth = s(1);
                         ctx.stroke();
                     }
