@@ -295,15 +295,16 @@
         };
 
         // ─── Bricks Grid ───
-        const GRID_COLS = 9;
-        const GRID_ROWS_VISIBLE = 6;
+        const GRID_COLS = 6;
+        const GRID_ROWS_VISIBLE = 5;
+        const DIVOTS_PER_BRICK = 3;
         let bricks = [];
         let brickW, brickH, gridOffsetX, gridStartY;
 
         function initGrid() {
             bricks = [];
             brickW = (W - s(20)) / GRID_COLS;
-            brickH = s(28);
+            brickH = s(55);
             gridOffsetX = s(10);
             gridStartY = H - GRID_ROWS_VISIBLE * brickH - s(10);
 
@@ -334,18 +335,20 @@
                     colorName,
                     color: COLORS[colorName].pastel,
                     darkColor: COLORS[colorName].dark,
-                    health: 3,
-                    maxHealth: 3,
+                    health: DIVOTS_PER_BRICK,
+                    maxHealth: DIVOTS_PER_BRICK,
+                    divots: [false, false, false], // 3 slots, false=empty, true=filled
                     pulseTimer: 0,
+                    popTimer: 0, // countdown before brick pops after all divots filled
                 });
             }
         }
 
         function checkRowCleared() {
-            // Group bricks by row
+            // Group bricks by row (exclude bricks that are popping)
             const rows = {};
             for (const brick of bricks) {
-                if (brick.active) {
+                if (brick.active && brick.popTimer <= 0) {
                     if (!rows[brick.row]) rows[brick.row] = 0;
                     rows[brick.row]++;
                 }
@@ -629,16 +632,19 @@
                             b.y = brick.y - b.radius;
                         }
 
-                        // Color match check
+                        // Color match check — fill a divot
                         if (b.colorName === brick.colorName) {
-                            brick.health--;
-                            brick.pulseTimer = 8;
-                            score += 10;
-                            if (brick.health <= 0) {
-                                brick.active = false;
-                                score += 50;
-                                spawnParticles(brick.x + brick.w / 2, brick.y + brick.h / 2, brick.color, 15);
-                                screenShake = 4;
+                            // Find first empty divot
+                            const emptyIdx = brick.divots.indexOf(false);
+                            if (emptyIdx !== -1) {
+                                brick.divots[emptyIdx] = true;
+                                brick.health--;
+                                brick.pulseTimer = 8;
+                                score += 10;
+                                // If all divots filled, start pop timer
+                                if (brick.health <= 0) {
+                                    brick.popTimer = 12; // short delay before pop
+                                }
                             }
                         }
 
@@ -668,9 +674,18 @@
                 if (p.life <= 0) p.active = false;
             }
 
-            // Brick pulse timer
+            // Brick pulse timer & pop timer
             for (const brick of bricks) {
                 if (brick.pulseTimer > 0) brick.pulseTimer--;
+                if (brick.popTimer > 0) {
+                    brick.popTimer--;
+                    if (brick.popTimer <= 0) {
+                        brick.active = false;
+                        score += 50;
+                        spawnParticles(brick.x + brick.w / 2, brick.y + brick.h / 2, brick.color, 15);
+                        screenShake = 4;
+                    }
+                }
             }
 
             // Check row clears
@@ -807,32 +822,81 @@
                 if (!brick.active) continue;
 
                 ctx.save();
+                // Pop animation — brick scales up then disappears
+                let popScale = 1;
+                if (brick.popTimer > 0) {
+                    popScale = 1 + (1 - brick.popTimer / 12) * 0.3;
+                    ctx.globalAlpha = brick.popTimer / 12;
+                }
                 const pulse = brick.pulseTimer > 0 ? 1 + Math.sin(brick.pulseTimer * 0.8) * 0.08 : 1;
-                if (pulse !== 1) {
+                const totalScale = pulse * popScale;
+                if (totalScale !== 1) {
                     const bcx = brick.x + brick.w / 2;
                     const bcy = brick.y + brick.h / 2;
                     ctx.translate(bcx, bcy);
-                    ctx.scale(pulse, pulse);
+                    ctx.scale(totalScale, totalScale);
                     ctx.translate(-bcx, -bcy);
                 }
 
-                drawRoundRect(brick.x, brick.y, brick.w, brick.h, s(4));
+                // Brick body
+                drawRoundRect(brick.x, brick.y, brick.w, brick.h, s(6));
                 const brickGrad = ctx.createLinearGradient(brick.x, brick.y, brick.x, brick.y + brick.h);
                 brickGrad.addColorStop(0, brick.color);
                 brickGrad.addColorStop(1, brick.darkColor);
                 ctx.fillStyle = brickGrad;
                 ctx.fill();
 
-                // Health indicator
-                ctx.fillStyle = 'rgba(255,255,255,0.8)';
-                ctx.font = `bold ${s(10)}px sans-serif`;
-                ctx.textAlign = 'center';
-                ctx.textBaseline = 'middle';
-                ctx.fillText(brick.health, brick.x + brick.w / 2, brick.y + brick.h / 2);
+                // Subtle border
+                ctx.strokeStyle = 'rgba(0,0,0,0.2)';
+                ctx.lineWidth = s(1);
+                ctx.stroke();
 
                 // Shine
-                ctx.fillStyle = 'rgba(255,255,255,0.1)';
-                ctx.fillRect(brick.x + s(2), brick.y + s(2), brick.w - s(4), brick.h * 0.35);
+                ctx.fillStyle = 'rgba(255,255,255,0.12)';
+                ctx.fillRect(brick.x + s(3), brick.y + s(3), brick.w - s(6), brick.h * 0.3);
+
+                // Draw divots (3 recessed circles)
+                const divotRadius = s(8);
+                const divotY = brick.y + brick.h * 0.6;
+                const divotSpacing = brick.w / (DIVOTS_PER_BRICK + 1);
+                for (let d = 0; d < DIVOTS_PER_BRICK; d++) {
+                    const divotX = brick.x + divotSpacing * (d + 1);
+
+                    if (brick.divots[d]) {
+                        // Filled divot — ball sitting in it, raised look
+                        const ballGrad = ctx.createRadialGradient(
+                            divotX - divotRadius * 0.3, divotY - divotRadius * 0.3, 0,
+                            divotX, divotY, divotRadius
+                        );
+                        ballGrad.addColorStop(0, '#fff');
+                        ballGrad.addColorStop(0.4, brick.color);
+                        ballGrad.addColorStop(1, brick.darkColor);
+                        ctx.beginPath();
+                        ctx.arc(divotX, divotY, divotRadius, 0, Math.PI * 2);
+                        ctx.fillStyle = ballGrad;
+                        ctx.fill();
+                        // Bright rim to show it's raised
+                        ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+                        ctx.lineWidth = s(1.5);
+                        ctx.stroke();
+                    } else {
+                        // Empty divot — recessed shadow circle
+                        const recess = ctx.createRadialGradient(
+                            divotX, divotY, divotRadius * 0.2,
+                            divotX, divotY, divotRadius
+                        );
+                        recess.addColorStop(0, 'rgba(0,0,0,0.35)');
+                        recess.addColorStop(1, 'rgba(0,0,0,0.08)');
+                        ctx.beginPath();
+                        ctx.arc(divotX, divotY, divotRadius, 0, Math.PI * 2);
+                        ctx.fillStyle = recess;
+                        ctx.fill();
+                        // Inner ring
+                        ctx.strokeStyle = 'rgba(0,0,0,0.15)';
+                        ctx.lineWidth = s(1);
+                        ctx.stroke();
+                    }
+                }
 
                 ctx.restore();
             }
