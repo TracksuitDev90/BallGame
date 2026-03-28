@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>Multiplier Ball Drop</title>
+    <title>Plinko Bricks</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         html, body {
@@ -59,10 +59,10 @@
     <canvas id="gameCanvas"></canvas>
     <div id="overlay" class="active">
         <div id="startPanel" class="panel visible">
-            <h1>Multiplier Ball Drop</h1>
-            <p>Click the colored buckets to release balls.<br>
-            Match ball colors to bricks to destroy them!<br>
-            Pass through multiplier gates for more balls.<br>
+            <h1>Plinko Bricks</h1>
+            <p>Tap the colored buckets to drop balls.<br>
+            Balls bounce off pegs on the way down!<br>
+            Match ball colors to bricks to destroy them.<br>
             Clear rows to level up!</p>
             <button class="btn" id="startBtn">Start Game</button>
         </div>
@@ -131,7 +131,6 @@
         let screenShake = 0;
         let screenShakeX = 0;
         let screenShakeY = 0;
-        let rotatingAngle = 0;
 
         // ─── Object Pool ───
         const MAX_BALLS = 600;
@@ -145,7 +144,6 @@
                 ballPool.push({
                     active: false, x: 0, y: 0, vx: 0, vy: 0,
                     radius: 0, color: '', colorName: '',
-                    multiplied: false,
                 });
             }
         }
@@ -282,38 +280,32 @@
             }
         }
 
-        // ─── Multiplier Gates ───
-        let gates = [];
-        function initGates() {
-            gates = [];
-            const gateY = s(70);
-            const gateH = s(20);
-            const bucketW = s(60);
-            const totalW = NUM_BUCKETS * bucketW;
-            const gap = (W - totalW) / (NUM_BUCKETS + 1);
-            const multipliers = [2, 3, 5, 3, 2];
-            for (let i = 0; i < NUM_BUCKETS; i++) {
-                const bx = gap + i * (bucketW + gap);
-                gates.push({
-                    x: bx,
-                    y: gateY,
-                    w: bucketW,
-                    h: gateH,
-                    multiplier: multipliers[i],
-                    glow: 0,
-                });
+        // ─── Plinko Peg Board ───
+        let pegs = [];
+        const PEG_RADIUS = 5;
+        const PEG_ROWS = 6;
+        const PEG_COLS = 7;
+
+        function initPegs() {
+            pegs = [];
+            const pegAreaTop = s(70);
+            const pegAreaBottom = s(260);
+            const rowSpacing = (pegAreaBottom - pegAreaTop) / (PEG_ROWS - 1);
+            const colSpacing = (W - s(40)) / (PEG_COLS);
+
+            for (let row = 0; row < PEG_ROWS; row++) {
+                const cols = (row % 2 === 0) ? PEG_COLS : PEG_COLS - 1;
+                const offsetX = (row % 2 === 0) ? s(20) + colSpacing / 2 : s(20) + colSpacing;
+                for (let col = 0; col < cols; col++) {
+                    pegs.push({
+                        x: offsetX + col * colSpacing,
+                        y: pegAreaTop + row * rowSpacing,
+                        radius: s(PEG_RADIUS),
+                        hitTimer: 0, // glows when hit
+                    });
+                }
             }
         }
-
-        // ─── Track Zone (stadium/pill shape spanning full width) ───
-        const TRACK = {
-            get cx() { return W / 2; },
-            get cy() { return s(170); },
-            get halfWidth() { return W / 2 - s(20); },  // straight section half-length
-            get radius() { return s(35); },              // end-cap radius
-            get wallThickness() { return s(6); },
-            get openingWidth() { return s(40); },        // exit opening at bottom center
-        };
 
         // ─── Bricks Grid ───
         const GRID_COLS = 5;
@@ -327,7 +319,7 @@
             brickW = (W - s(16)) / GRID_COLS;
             brickH = s(68);
             gridOffsetX = s(8);
-            gridStartY = H - GRID_ROWS_VISIBLE * brickH - s(10);
+            gridStartY = s(280);
 
             for (let row = 0; row < GRID_ROWS_VISIBLE; row++) {
                 spawnBrickRow(row);
@@ -457,11 +449,11 @@
             score = 0;
             level = 1;
             screenShake = 0;
-            rotatingAngle = 0;
+
             pickGameColors();
             initGrid();
             initBuckets();
-            initGates();
+            initPegs();
             gameState = 'playing';
             overlay.classList.remove('active');
             startPanel.classList.remove('visible');
@@ -514,50 +506,9 @@
         const BALL_RADIUS = 4;
         const BOUNCE_DAMP = 0.6;
 
-        // Stadium shape: two semicircle caps connected by straight top/bottom edges
-        // The "opening" is a gap at the bottom-center where balls exit
-        function trackDistanceInfo(x, y) {
-            const cx = TRACK.cx;
-            const cy = TRACK.cy;
-            const hw = TRACK.halfWidth - TRACK.radius; // half-length of straight section
-            const r = TRACK.radius;
-            const wt = TRACK.wallThickness;
-
-            // Clamp to find nearest point on stadium centerline
-            let nearX, nearY, dist;
-            if (x < cx - hw) {
-                // Left cap
-                const dx = x - (cx - hw);
-                const dy = y - cy;
-                dist = Math.sqrt(dx * dx + dy * dy);
-                nearX = dx; nearY = dy;
-            } else if (x > cx + hw) {
-                // Right cap
-                const dx = x - (cx + hw);
-                const dy = y - cy;
-                dist = Math.sqrt(dx * dx + dy * dy);
-                nearX = dx; nearY = dy;
-            } else {
-                // Straight section — distance is just vertical distance from center
-                dist = Math.abs(y - cy);
-                nearX = 0;
-                nearY = y - cy;
-            }
-
-            // Check if point is in the bottom exit opening
-            const inOpening = (y > cy) && (x > cx - TRACK.openingWidth / 2) && (x < cx + TRACK.openingWidth / 2)
-                && (x >= cx - hw) && (x <= cx + hw);
-
-            const onWall = dist >= r - wt && dist <= r + wt;
-            const inside = dist < r - wt;
-
-            return { dist, onWall, inside, inOpening, nearX, nearY };
-        }
 
         function update() {
             if (gameState !== 'playing') return;
-
-            // Track is static (no rotation needed)
 
             // Screen shake decay
             if (screenShake > 0) {
@@ -613,96 +564,27 @@
                 if (b.x - b.radius < 0) { b.x = b.radius; b.vx = Math.abs(b.vx) * BOUNCE_DAMP; }
                 if (b.x + b.radius > W) { b.x = W - b.radius; b.vx = -Math.abs(b.vx) * BOUNCE_DAMP; }
 
-                // Check gate collision
-                if (!b.multiplied) {
-                    for (const gate of gates) {
-                        if (b.x >= gate.x && b.x <= gate.x + gate.w &&
-                            b.y >= gate.y && b.y <= gate.y + gate.h) {
-                            b.multiplied = true;
-                            gate.glow = 1;
-                            // Spawn extra balls
-                            for (let m = 1; m < gate.multiplier; m++) {
-                                spawnBall(
-                                    b.x + (Math.random() - 0.5) * s(10),
-                                    b.y,
-                                    (Math.random() - 0.5) * s(2),
-                                    b.vy * (0.8 + Math.random() * 0.4),
-                                    b.radius,
-                                    b.colorName
-                                );
-                            }
-                            break;
-                        }
+                // Peg collisions
+                for (const peg of pegs) {
+                    const dx = b.x - peg.x;
+                    const dy = b.y - peg.y;
+                    const dist = Math.sqrt(dx * dx + dy * dy);
+                    const minDist = b.radius + peg.radius;
+                    if (dist < minDist && dist > 0) {
+                        // Bounce off peg
+                        const nx = dx / dist;
+                        const ny = dy / dist;
+                        // Push ball out
+                        b.x = peg.x + nx * minDist;
+                        b.y = peg.y + ny * minDist;
+                        // Reflect velocity
+                        const dot = b.vx * nx + b.vy * ny;
+                        b.vx -= 2 * dot * nx * BOUNCE_DAMP;
+                        b.vy -= 2 * dot * ny * BOUNCE_DAMP;
+                        // Add slight random scatter for variety
+                        b.vx += (Math.random() - 0.5) * s(0.5);
+                        peg.hitTimer = 8;
                     }
-                }
-
-                // Track zone collision (stadium shape)
-                const tInfo = trackDistanceInfo(b.x, b.y);
-
-                if (!tInfo.inOpening && tInfo.onWall) {
-                    // Compute normal for bounce
-                    const cx = TRACK.cx;
-                    const cy = TRACK.cy;
-                    const hw = TRACK.halfWidth - TRACK.radius;
-                    let nx, ny;
-
-                    if (b.x < cx - hw) {
-                        // Left cap — normal points from cap center
-                        const cdx = b.x - (cx - hw);
-                        const cdy = b.y - cy;
-                        const cd = Math.sqrt(cdx * cdx + cdy * cdy) || 1;
-                        nx = cdx / cd; ny = cdy / cd;
-                    } else if (b.x > cx + hw) {
-                        // Right cap
-                        const cdx = b.x - (cx + hw);
-                        const cdy = b.y - cy;
-                        const cd = Math.sqrt(cdx * cdx + cdy * cdy) || 1;
-                        nx = cdx / cd; ny = cdy / cd;
-                    } else {
-                        // Straight section — normal is purely vertical
-                        nx = 0;
-                        ny = (b.y > cy) ? 1 : -1;
-                    }
-
-                    // Push ball out of wall
-                    if (tInfo.dist < TRACK.radius) {
-                        // Inside wall, push inward
-                        const target = TRACK.radius - TRACK.wallThickness - b.radius;
-                        if (b.x < cx - hw) {
-                            b.x = (cx - hw) + nx * target;
-                            b.y = cy + ny * target;
-                        } else if (b.x > cx + hw) {
-                            b.x = (cx + hw) + nx * target;
-                            b.y = cy + ny * target;
-                        } else {
-                            b.y = cy + ny * target;
-                        }
-                    } else {
-                        // Outside wall, push outward
-                        const target = TRACK.radius + TRACK.wallThickness + b.radius;
-                        if (b.x < cx - hw) {
-                            b.x = (cx - hw) + nx * target;
-                            b.y = cy + ny * target;
-                        } else if (b.x > cx + hw) {
-                            b.x = (cx + hw) + nx * target;
-                            b.y = cy + ny * target;
-                        } else {
-                            b.y = cy + ny * target;
-                        }
-                    }
-
-                    const dot = b.vx * nx + b.vy * ny;
-                    b.vx -= 2 * dot * nx * BOUNCE_DAMP;
-                    b.vy -= 2 * dot * ny * BOUNCE_DAMP;
-                }
-
-                // Inside track — apply gentle horizontal push toward exit
-                if (tInfo.inside) {
-                    // Push balls toward the bottom opening
-                    const toCenterX = TRACK.cx - b.x;
-                    const dist = Math.abs(toCenterX) || 1;
-                    b.vx += (toCenterX / dist) * 0.03 * scale;
-                    b.vy += 0.02 * scale; // nudge downward toward exit
                 }
 
                 // Brick collisions
@@ -758,9 +640,9 @@
                 }
             }
 
-            // Update gate glow
-            for (const gate of gates) {
-                if (gate.glow > 0) gate.glow -= 0.03;
+            // Update peg hit timers
+            for (const peg of pegs) {
+                if (peg.hitTimer > 0) peg.hitTimer--;
             }
 
             // Update particles
@@ -888,90 +770,37 @@
                 ctx.restore();
             }
 
-            // Draw gates
-            for (const gate of gates) {
-                ctx.globalAlpha = 0.5 + gate.glow * 0.5;
-                drawRoundRect(gate.x, gate.y, gate.w, gate.h, s(4));
-                ctx.fillStyle = `rgba(255, 220, 100, ${0.15 + gate.glow * 0.3})`;
+            // Draw pegs
+            for (const peg of pegs) {
+                const glow = peg.hitTimer / 8;
+                const pr = peg.radius * (1 + glow * 0.3);
+
+                // Glow effect when hit
+                if (glow > 0) {
+                    ctx.beginPath();
+                    ctx.arc(peg.x, peg.y, pr + s(6), 0, Math.PI * 2);
+                    ctx.fillStyle = `rgba(200, 180, 255, ${glow * 0.3})`;
+                    ctx.fill();
+                }
+
+                // Peg body
+                const pegGrad = ctx.createRadialGradient(
+                    peg.x - pr * 0.3, peg.y - pr * 0.3, 0,
+                    peg.x, peg.y, pr
+                );
+                pegGrad.addColorStop(0, `rgba(255, 255, 255, ${0.9 + glow * 0.1})`);
+                pegGrad.addColorStop(0.5, `rgba(180, 160, 220, ${0.7 + glow * 0.3})`);
+                pegGrad.addColorStop(1, `rgba(100, 80, 160, ${0.8 + glow * 0.2})`);
+                ctx.beginPath();
+                ctx.arc(peg.x, peg.y, pr, 0, Math.PI * 2);
+                ctx.fillStyle = pegGrad;
                 ctx.fill();
-                ctx.strokeStyle = `rgba(255, 220, 100, ${0.6 + gate.glow * 0.4})`;
-                ctx.lineWidth = s(1.5);
-                ctx.stroke();
 
-                ctx.fillStyle = '#ffd700';
-                ctx.font = `bold ${s(12)}px sans-serif`;
-                ctx.textAlign = 'center';
-                ctx.textBaseline = 'middle';
-                ctx.fillText(`x${gate.multiplier}`, gate.x + gate.w / 2, gate.y + gate.h / 2);
-                ctx.globalAlpha = 1;
-            }
-
-            // Draw track zone (stadium/pill shape)
-            ctx.save();
-            const tcx = TRACK.cx;
-            const tcy = TRACK.cy;
-            const thw = TRACK.halfWidth - TRACK.radius; // half straight section
-            const tr = TRACK.radius;
-            const twt = TRACK.wallThickness;
-            const openHalf = TRACK.openingWidth / 2;
-
-            // Helper to draw the stadium path with bottom opening
-            function drawTrackPath() {
-                ctx.beginPath();
-                // Start from right side of opening, go right along bottom
-                ctx.moveTo(tcx + openHalf, tcy + tr);
-                // Bottom straight right
-                ctx.lineTo(tcx + thw, tcy + tr);
-                // Right semicircle cap (bottom to top)
-                ctx.arc(tcx + thw, tcy, tr, Math.PI / 2, -Math.PI / 2);
-                // Top straight (right to left)
-                ctx.lineTo(tcx - thw, tcy - tr);
-                // Left semicircle cap (top to bottom)
-                ctx.arc(tcx - thw, tcy, tr, -Math.PI / 2, Math.PI / 2);
-                // Bottom straight left
-                ctx.lineTo(tcx - openHalf, tcy + tr);
-            }
-
-            // Outer glow
-            drawTrackPath();
-            ctx.strokeStyle = 'rgba(180, 160, 255, 0.12)';
-            ctx.lineWidth = twt + s(8);
-            ctx.lineCap = 'round';
-            ctx.stroke();
-
-            // Main wall
-            drawTrackPath();
-            ctx.strokeStyle = 'rgba(180, 160, 255, 0.5)';
-            ctx.lineWidth = twt;
-            ctx.lineCap = 'round';
-            ctx.stroke();
-
-            // Opening indicator dots
-            ctx.fillStyle = 'rgba(180, 160, 255, 0.8)';
-            ctx.beginPath();
-            ctx.arc(tcx - openHalf, tcy + tr, s(4), 0, Math.PI * 2);
-            ctx.fill();
-            ctx.beginPath();
-            ctx.arc(tcx + openHalf, tcy + tr, s(4), 0, Math.PI * 2);
-            ctx.fill();
-
-            // Animated chevrons inside the track to show flow direction
-            ctx.globalAlpha = 0.2;
-            const chevronTime = (Date.now() / 600) % 1;
-            for (let i = 0; i < 3; i++) {
-                const t = ((chevronTime + i / 3) % 1);
-                const cx2 = tcx + thw * (1 - 2 * t);
-                ctx.beginPath();
-                ctx.moveTo(cx2 - s(4), tcy - s(4));
-                ctx.lineTo(cx2 + s(4), tcy);
-                ctx.lineTo(cx2 - s(4), tcy + s(4));
-                ctx.strokeStyle = 'rgba(200, 180, 255, 0.8)';
-                ctx.lineWidth = s(2);
+                // Subtle border
+                ctx.strokeStyle = `rgba(255, 255, 255, ${0.3 + glow * 0.4})`;
+                ctx.lineWidth = s(1);
                 ctx.stroke();
             }
-            ctx.globalAlpha = 1;
-
-            ctx.restore();
 
             // Draw bricks (iOS 26 liquid glass with centered divots)
             const now = Date.now() / 1000;
