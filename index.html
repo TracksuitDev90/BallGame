@@ -60,10 +60,10 @@
     <div id="overlay" class="active">
         <div id="startPanel" class="panel visible">
             <h1>Plinko Bricks</h1>
-            <p>Tap the colored buckets to drop balls.<br>
-            Balls bounce off pegs on the way down!<br>
+            <p>Tap buckets to drop balls — aim left or right!<br>
+            Hit glowing perk pegs for power-ups.<br>
             Match ball colors to bricks to destroy them.<br>
-            Clear rows to level up!</p>
+            Chain hits for combos. Clear rows to level up!</p>
             <button class="btn" id="startBtn">Start Game</button>
         </div>
         <div id="gameOverPanel" class="panel">
@@ -137,6 +137,19 @@
         let comboTimer = 0;
         const COMBO_WINDOW = 90; // frames to land next hit before combo resets
         let comboPopups = []; // floating "+Nx" text popups
+
+        // ─── Active Perks ───
+        const PERK_TYPES = ['slow', 'freeze', 'fire'];
+        const PERK_ICONS = { slow: '\u23F1', freeze: '\u2744', fire: '\uD83D\uDD25' }; // ⏱ ❄ 🔥
+        const PERK_COLORS = {
+            slow:   { bg: '#4488ff', glow: 'rgba(68,136,255,0.6)' },
+            freeze: { bg: '#66ddff', glow: 'rgba(102,221,255,0.6)' },
+            fire:   { bg: '#ff6622', glow: 'rgba(255,102,34,0.6)' },
+        };
+        const PERK_DURATION = 300; // frames each perk lasts (~5 seconds)
+        let activePerks = { slow: 0, freeze: 0, fire: 0 }; // remaining frames
+        let perkSpawnTimer = 0;
+        const PERK_SPAWN_INTERVAL = 360; // frames between new perk pegs appearing (~6s)
 
         // ─── Object Pool ───
         const MAX_BALLS = 600;
@@ -251,7 +264,8 @@
                     ammo: 20,
                     maxAmmo: 20,
                     rechargeTimer: 0,
-                    rechargeRate: 12, // frames per ammo point recovered
+                    rechargeRate: 12,
+                    aimAngle: 0, // -1 (left) to +1 (right)
                 });
             }
         }
@@ -311,10 +325,26 @@
                         x: offsetX + col * colSpacing,
                         y: pegAreaTop + row * rowSpacing,
                         radius: s(PEG_RADIUS),
-                        hitTimer: 0, // glows when hit
+                        hitTimer: 0,
+                        perk: null, // null = normal peg, or 'slow'/'freeze'/'fire'
+                        row, col,
                     });
                 }
             }
+        }
+
+        function spawnPerkPeg() {
+            // Pick a random normal peg and turn it into a perk
+            const normalPegs = pegs.filter(p => !p.perk);
+            if (normalPegs.length === 0) return;
+            const peg = normalPegs[Math.floor(Math.random() * normalPegs.length)];
+            peg.perk = PERK_TYPES[Math.floor(Math.random() * PERK_TYPES.length)];
+            peg.radius = s(PEG_RADIUS * 1.8); // perk pegs are bigger
+        }
+
+        function clearPerkFromPeg(peg) {
+            peg.perk = null;
+            peg.radius = s(PEG_RADIUS);
         }
 
         // ─── Bricks Grid ───
@@ -462,6 +492,8 @@
             combo = 0;
             comboTimer = 0;
             comboPopups = [];
+            activePerks = { slow: 0, freeze: 0, fire: 0 };
+            perkSpawnTimer = 180; // first perk appears after 3 seconds
 
             pickGameColors();
             initGrid();
@@ -496,12 +528,15 @@
             for (const bucket of buckets) {
                 if (pos.x >= bucket.x && pos.x <= bucket.x + bucket.w &&
                     pos.y >= bucket.y && pos.y <= bucket.y + bucket.h) {
-                    if (bucket.ammo <= 0) continue; // empty — can't fire
+                    if (bucket.ammo <= 0 && !activePerks.fire) continue;
                     bucket.streaming = true;
                     bucket.streamDuration = 0;
                     bucket.streamTimer = 0;
                     bucket.tweenDir = 1;
                     bucket.tweenScale = 1.2;
+                    // Aim: tap position within bucket sets horizontal angle
+                    const tapRatio = (pos.x - bucket.x) / bucket.w; // 0=left, 1=right
+                    bucket.aimAngle = (tapRatio - 0.5) * 2; // -1 to +1
                 }
             }
         }
@@ -548,21 +583,25 @@
                     }
                 }
 
-                // Stream balls (consumes ammo)
+                // Stream balls (consumes ammo, or free with fire perk)
                 if (bucket.streaming) {
                     bucket.streamTimer++;
                     bucket.streamDuration++;
                     if (bucket.streamTimer >= bucket.streamInterval) {
                         bucket.streamTimer = 0;
-                        if (bucket.ammo > 0) {
-                            bucket.ammo--;
-                            const bx = bucket.x + bucket.w / 2 + (Math.random() - 0.5) * s(20);
+                        const hasFire = activePerks.fire > 0;
+                        if (bucket.ammo > 0 || hasFire) {
+                            if (!hasFire) bucket.ammo--;
+                            const bx = bucket.x + bucket.w / 2 + (Math.random() - 0.5) * s(6);
                             const by = bucket.y + bucket.h;
                             const r = s(BALL_RADIUS);
-                            spawnBall(bx, by, (Math.random() - 0.5) * s(0.5), s(1.5 + Math.random()), r, bucket.colorName);
+                            // Aimed trajectory: aimAngle controls horizontal velocity
+                            const aimVx = bucket.aimAngle * s(2.5) + (Math.random() - 0.5) * s(0.3);
+                            spawnBall(bx, by, aimVx, s(1.5 + Math.random() * 0.5), r, bucket.colorName);
                         }
                     }
-                    if (bucket.streamDuration >= bucket.maxStreamDuration || bucket.ammo <= 0) {
+                    const canFire = bucket.ammo > 0 || activePerks.fire > 0;
+                    if (bucket.streamDuration >= bucket.maxStreamDuration || !canFire) {
                         bucket.streaming = false;
                     }
                 }
@@ -584,7 +623,8 @@
                 const b = ballPool[i];
                 if (!b.active) continue;
 
-                b.vy += GRAVITY * scale;
+                const grav = activePerks.slow > 0 ? GRAVITY * 0.4 : GRAVITY;
+                b.vy += grav * scale;
                 b.x += b.vx;
                 b.y += b.vy;
 
@@ -602,16 +642,26 @@
                         // Bounce off peg
                         const nx = dx / dist;
                         const ny = dy / dist;
-                        // Push ball out
                         b.x = peg.x + nx * minDist;
                         b.y = peg.y + ny * minDist;
-                        // Reflect velocity
                         const dot = b.vx * nx + b.vy * ny;
                         b.vx -= 2 * dot * nx * BOUNCE_DAMP;
                         b.vy -= 2 * dot * ny * BOUNCE_DAMP;
-                        // Add slight random scatter for variety
                         b.vx += (Math.random() - 0.5) * s(0.5);
                         peg.hitTimer = 8;
+
+                        // Activate perk if this is a perk peg
+                        if (peg.perk) {
+                            activePerks[peg.perk] = PERK_DURATION;
+                            spawnParticles(peg.x, peg.y, PERK_COLORS[peg.perk].bg, 12);
+                            screenShake = 5;
+                            comboPopups.push({
+                                x: peg.x, y: peg.y - s(10),
+                                text: PERK_ICONS[peg.perk] + ' ' + peg.perk.toUpperCase() + '!',
+                                life: 1,
+                            });
+                            clearPerkFromPeg(peg);
+                        }
                     }
                 }
 
@@ -686,8 +736,22 @@
                 if (peg.hitTimer > 0) peg.hitTimer--;
             }
 
-            // Combo timer decay
-            if (comboTimer > 0) {
+            // Spawn perk pegs periodically
+            perkSpawnTimer--;
+            if (perkSpawnTimer <= 0) {
+                perkSpawnTimer = PERK_SPAWN_INTERVAL;
+                // Only spawn if fewer than 2 perk pegs exist
+                const perkCount = pegs.filter(p => p.perk).length;
+                if (perkCount < 2) spawnPerkPeg();
+            }
+
+            // Tick down active perks
+            for (const key of PERK_TYPES) {
+                if (activePerks[key] > 0) activePerks[key]--;
+            }
+
+            // Combo timer decay (freeze perk pauses it)
+            if (comboTimer > 0 && activePerks.freeze <= 0) {
                 comboTimer--;
                 if (comboTimer <= 0) combo = 0;
             }
@@ -809,11 +873,29 @@
                 ctx.lineWidth = s(1.5);
                 ctx.stroke();
 
-                // Bucket nozzle
+                // Bucket nozzle with aim indicator
                 ctx.beginPath();
                 ctx.arc(cx, bucket.y + bucket.h, s(7), 0, Math.PI, false);
                 ctx.fillStyle = col.dark;
                 ctx.fill();
+
+                // Aim direction line (shows when streaming)
+                if (bucket.streaming) {
+                    const aimX = cx + bucket.aimAngle * s(18);
+                    const aimY = bucket.y + bucket.h + s(16);
+                    ctx.beginPath();
+                    ctx.moveTo(cx, bucket.y + bucket.h + s(2));
+                    ctx.lineTo(aimX, aimY);
+                    ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+                    ctx.lineWidth = s(2);
+                    ctx.lineCap = 'round';
+                    ctx.stroke();
+                    // Arrow tip
+                    ctx.beginPath();
+                    ctx.arc(aimX, aimY, s(2.5), 0, Math.PI * 2);
+                    ctx.fillStyle = 'rgba(255,255,255,0.8)';
+                    ctx.fill();
+                }
 
                 // Label
                 ctx.fillStyle = '#fff';
@@ -848,31 +930,68 @@
                 const glow = peg.hitTimer / 8;
                 const pr = peg.radius * (1 + glow * 0.3);
 
-                // Glow effect when hit
-                if (glow > 0) {
+                if (peg.perk) {
+                    // ── Perk peg: larger, colored, with icon ──
+                    const pc = PERK_COLORS[peg.perk];
+                    const pulse = 1 + Math.sin(Date.now() / 200) * 0.08;
+                    const ppr = pr * pulse;
+
+                    // Outer glow
                     ctx.beginPath();
-                    ctx.arc(peg.x, peg.y, pr + s(6), 0, Math.PI * 2);
-                    ctx.fillStyle = `rgba(200, 180, 255, ${glow * 0.3})`;
+                    ctx.arc(peg.x, peg.y, ppr + s(10), 0, Math.PI * 2);
+                    ctx.fillStyle = pc.glow;
                     ctx.fill();
+
+                    // Body
+                    const pGrad = ctx.createRadialGradient(
+                        peg.x - ppr * 0.3, peg.y - ppr * 0.3, 0,
+                        peg.x, peg.y, ppr
+                    );
+                    pGrad.addColorStop(0, '#fff');
+                    pGrad.addColorStop(0.4, pc.bg);
+                    pGrad.addColorStop(1, 'rgba(0,0,0,0.3)');
+                    ctx.beginPath();
+                    ctx.arc(peg.x, peg.y, ppr, 0, Math.PI * 2);
+                    ctx.fillStyle = pGrad;
+                    ctx.fill();
+
+                    // Border
+                    ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+                    ctx.lineWidth = s(1.5);
+                    ctx.stroke();
+
+                    // Icon
+                    ctx.fillStyle = '#fff';
+                    ctx.font = `${s(10)}px sans-serif`;
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    ctx.fillText(PERK_ICONS[peg.perk], peg.x, peg.y);
+
+                } else {
+                    // ── Normal peg ──
+                    if (glow > 0) {
+                        ctx.beginPath();
+                        ctx.arc(peg.x, peg.y, pr + s(6), 0, Math.PI * 2);
+                        ctx.fillStyle = `rgba(200, 180, 255, ${glow * 0.3})`;
+                        ctx.fill();
+                    }
+
+                    const pegGrad = ctx.createRadialGradient(
+                        peg.x - pr * 0.3, peg.y - pr * 0.3, 0,
+                        peg.x, peg.y, pr
+                    );
+                    pegGrad.addColorStop(0, `rgba(255, 255, 255, ${0.9 + glow * 0.1})`);
+                    pegGrad.addColorStop(0.5, `rgba(180, 160, 220, ${0.7 + glow * 0.3})`);
+                    pegGrad.addColorStop(1, `rgba(100, 80, 160, ${0.8 + glow * 0.2})`);
+                    ctx.beginPath();
+                    ctx.arc(peg.x, peg.y, pr, 0, Math.PI * 2);
+                    ctx.fillStyle = pegGrad;
+                    ctx.fill();
+
+                    ctx.strokeStyle = `rgba(255, 255, 255, ${0.3 + glow * 0.4})`;
+                    ctx.lineWidth = s(1);
+                    ctx.stroke();
                 }
-
-                // Peg body
-                const pegGrad = ctx.createRadialGradient(
-                    peg.x - pr * 0.3, peg.y - pr * 0.3, 0,
-                    peg.x, peg.y, pr
-                );
-                pegGrad.addColorStop(0, `rgba(255, 255, 255, ${0.9 + glow * 0.1})`);
-                pegGrad.addColorStop(0.5, `rgba(180, 160, 220, ${0.7 + glow * 0.3})`);
-                pegGrad.addColorStop(1, `rgba(100, 80, 160, ${0.8 + glow * 0.2})`);
-                ctx.beginPath();
-                ctx.arc(peg.x, peg.y, pr, 0, Math.PI * 2);
-                ctx.fillStyle = pegGrad;
-                ctx.fill();
-
-                // Subtle border
-                ctx.strokeStyle = `rgba(255, 255, 255, ${0.3 + glow * 0.4})`;
-                ctx.lineWidth = s(1);
-                ctx.stroke();
             }
 
             // Draw bricks (iOS 26 liquid glass with centered divots)
@@ -1103,6 +1222,27 @@
 
             ctx.textAlign = 'right';
             ctx.fillText(`Level ${level}`, W - s(10), H - s(28));
+
+            // Active perk indicators
+            let perkIdx = 0;
+            for (const key of PERK_TYPES) {
+                if (activePerks[key] > 0) {
+                    const px = s(10) + perkIdx * s(55);
+                    const py = H - s(52);
+                    const pAlpha = activePerks[key] < 60 ? 0.3 + 0.7 * ((activePerks[key] % 20) / 20) : 1;
+                    ctx.globalAlpha = pAlpha;
+                    ctx.fillStyle = PERK_COLORS[key].bg;
+                    drawRoundRect(px, py, s(50), s(18), s(4));
+                    ctx.fill();
+                    ctx.fillStyle = '#fff';
+                    ctx.font = `bold ${s(10)}px sans-serif`;
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    ctx.fillText(PERK_ICONS[key] + ' ' + Math.ceil(activePerks[key] / 60) + 's', px + s(25), py + s(9));
+                    ctx.globalAlpha = 1;
+                    perkIdx++;
+                }
+            }
 
             // Combo indicator
             if (combo > 1) {
