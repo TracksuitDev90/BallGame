@@ -132,6 +132,12 @@
         let screenShakeX = 0;
         let screenShakeY = 0;
 
+        // ─── Combo System ───
+        let combo = 0;
+        let comboTimer = 0;
+        const COMBO_WINDOW = 90; // frames to land next hit before combo resets
+        let comboPopups = []; // floating "+Nx" text popups
+
         // ─── Object Pool ───
         const MAX_BALLS = 600;
         const ballPool = [];
@@ -449,6 +455,9 @@
             score = 0;
             level = 1;
             screenShake = 0;
+            combo = 0;
+            comboTimer = 0;
+            comboPopups = [];
 
             pickGameColors();
             initGrid();
@@ -621,7 +630,20 @@
                                 brick.divots[emptyIdx] = true;
                                 brick.health--;
                                 brick.pulseTimer = 8;
-                                score += 10;
+                                // Combo: increment and apply multiplier
+                                combo++;
+                                comboTimer = COMBO_WINDOW;
+                                const multiplier = Math.min(combo, 10);
+                                const pts = 10 * multiplier;
+                                score += pts;
+                                if (combo > 1) {
+                                    comboPopups.push({
+                                        x: brick.x + brick.w / 2,
+                                        y: brick.y,
+                                        text: `${pts} x${multiplier}`,
+                                        life: 1,
+                                    });
+                                }
                                 // If all divots filled, start pop timer
                                 if (brick.health <= 0) {
                                     brick.popTimer = 12; // short delay before pop
@@ -645,6 +667,19 @@
                 if (peg.hitTimer > 0) peg.hitTimer--;
             }
 
+            // Combo timer decay
+            if (comboTimer > 0) {
+                comboTimer--;
+                if (comboTimer <= 0) combo = 0;
+            }
+
+            // Update combo popups
+            for (let i = comboPopups.length - 1; i >= 0; i--) {
+                comboPopups[i].y -= s(1.2);
+                comboPopups[i].life -= 0.025;
+                if (comboPopups[i].life <= 0) comboPopups.splice(i, 1);
+            }
+
             // Update particles
             for (const p of particles) {
                 if (!p.active) continue;
@@ -662,7 +697,8 @@
                     brick.popTimer--;
                     if (brick.popTimer <= 0) {
                         brick.active = false;
-                        score += 50;
+                        const brickMult = Math.min(combo > 0 ? combo : 1, 10);
+                        score += 50 * brickMult;
                         spawnParticles(brick.x + brick.w / 2, brick.y + brick.h / 2, brick.color, 15);
                         screenShake = 4;
                     }
@@ -1031,11 +1067,35 @@
             ctx.textAlign = 'right';
             ctx.fillText(`Level ${level}`, W - s(10), H - s(28));
 
-            // Ball count indicator
-            ctx.textAlign = 'center';
-            ctx.font = `${s(10)}px sans-serif`;
-            ctx.fillStyle = 'rgba(255,255,255,0.4)';
-            ctx.fillText(`Balls: ${activeBalls}`, W / 2, H - s(28));
+            // Combo indicator
+            if (combo > 1) {
+                const comboAlpha = Math.min(comboTimer / 30, 1);
+                const comboScale = 1 + Math.sin(Date.now() / 100) * 0.05;
+                ctx.save();
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.translate(W / 2, H - s(55));
+                ctx.scale(comboScale, comboScale);
+                ctx.font = `bold ${s(22)}px sans-serif`;
+                ctx.fillStyle = `rgba(255, 215, 0, ${comboAlpha})`;
+                ctx.fillText(`COMBO x${Math.min(combo, 10)}`, 0, 0);
+                // Combo timer bar
+                ctx.fillStyle = `rgba(255, 215, 0, ${comboAlpha * 0.5})`;
+                const barW = s(80) * (comboTimer / COMBO_WINDOW);
+                ctx.fillRect(-barW / 2, s(14), barW, s(4));
+                ctx.restore();
+            }
+
+            // Combo popups (floating score text)
+            for (const popup of comboPopups) {
+                ctx.globalAlpha = popup.life;
+                ctx.fillStyle = '#ffd700';
+                ctx.font = `bold ${s(14)}px sans-serif`;
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'bottom';
+                ctx.fillText(popup.text, popup.x, popup.y);
+                ctx.globalAlpha = 1;
+            }
 
             ctx.restore();
         }
