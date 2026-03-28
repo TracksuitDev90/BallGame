@@ -248,6 +248,10 @@
                     streamInterval: 3,
                     streamDuration: 0,
                     maxStreamDuration: 60,
+                    ammo: 20,
+                    maxAmmo: 20,
+                    rechargeTimer: 0,
+                    rechargeRate: 12, // frames per ammo point recovered
                 });
             }
         }
@@ -492,6 +496,7 @@
             for (const bucket of buckets) {
                 if (pos.x >= bucket.x && pos.x <= bucket.x + bucket.w &&
                     pos.y >= bucket.y && pos.y <= bucket.y + bucket.h) {
+                    if (bucket.ammo <= 0) continue; // empty — can't fire
                     bucket.streaming = true;
                     bucket.streamDuration = 0;
                     bucket.streamTimer = 0;
@@ -543,20 +548,34 @@
                     }
                 }
 
-                // Stream balls
+                // Stream balls (consumes ammo)
                 if (bucket.streaming) {
                     bucket.streamTimer++;
                     bucket.streamDuration++;
                     if (bucket.streamTimer >= bucket.streamInterval) {
                         bucket.streamTimer = 0;
-                        const bx = bucket.x + bucket.w / 2 + (Math.random() - 0.5) * s(20);
-                        const by = bucket.y + bucket.h;
-                        const r = s(BALL_RADIUS);
-                        spawnBall(bx, by, (Math.random() - 0.5) * s(0.5), s(1.5 + Math.random()), r, bucket.colorName);
+                        if (bucket.ammo > 0) {
+                            bucket.ammo--;
+                            const bx = bucket.x + bucket.w / 2 + (Math.random() - 0.5) * s(20);
+                            const by = bucket.y + bucket.h;
+                            const r = s(BALL_RADIUS);
+                            spawnBall(bx, by, (Math.random() - 0.5) * s(0.5), s(1.5 + Math.random()), r, bucket.colorName);
+                        }
                     }
-                    if (bucket.streamDuration >= bucket.maxStreamDuration) {
+                    if (bucket.streamDuration >= bucket.maxStreamDuration || bucket.ammo <= 0) {
                         bucket.streaming = false;
                     }
+                }
+
+                // Recharge ammo when not streaming
+                if (!bucket.streaming && bucket.ammo < bucket.maxAmmo) {
+                    bucket.rechargeTimer++;
+                    if (bucket.rechargeTimer >= bucket.rechargeRate) {
+                        bucket.rechargeTimer = 0;
+                        bucket.ammo++;
+                    }
+                } else {
+                    bucket.rechargeTimer = 0;
                 }
             }
 
@@ -801,7 +820,25 @@
                 ctx.font = `bold ${s(10)}px sans-serif`;
                 ctx.textAlign = 'center';
                 ctx.textBaseline = 'middle';
-                ctx.fillText(bucket.colorName.toUpperCase(), cx, cy);
+                ctx.fillText(bucket.colorName.toUpperCase(), cx, cy - s(4));
+
+                // Ammo bar
+                const barW = bucket.w - s(12);
+                const barH = s(5);
+                const barX = bucket.x + s(6);
+                const barY = bucket.y + bucket.h - s(10);
+                const fill = bucket.ammo / bucket.maxAmmo;
+                // Background
+                ctx.fillStyle = 'rgba(0,0,0,0.35)';
+                drawRoundRect(barX, barY, barW, barH, s(2));
+                ctx.fill();
+                // Fill
+                if (fill > 0) {
+                    const fillColor = fill > 0.3 ? col.pastel : '#ff4444';
+                    ctx.fillStyle = fillColor;
+                    drawRoundRect(barX, barY, barW * fill, barH, s(2));
+                    ctx.fill();
+                }
 
                 ctx.restore();
             }
