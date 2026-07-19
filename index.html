@@ -45,6 +45,7 @@
         .panel p { font-size: 15px; color: #aaa; margin-bottom: 18px; line-height: 1.5; }
         .panel .score-display { font-size: 36px; color: #ffd700; margin: 10px 0; }
         .panel .best { color: #7ddfb0; font-size: 14px; }
+        .panel .hint { font-size: 12px; color: #777; margin-top: 14px; margin-bottom: 0; }
         .btn {
             padding: 14px 40px;
             font-size: 18px;
@@ -71,6 +72,7 @@
             Hit glowing pegs for power-ups. Chain hits for combos.<br>
             Clear rows before the glass stack reaches the bottom!</p>
             <button class="btn" id="startBtn">Start Game</button>
+            <p class="hint">Press <b>M</b> anytime to toggle sound</p>
         </div>
         <div id="gameOverPanel" class="panel">
             <h2>Game Over</h2>
@@ -119,6 +121,7 @@
             const oldScale = scale;
             scale = W / BASE_W;
             if (layoutReady) relayout(oldScale);
+            buildBackground();
         }
         window.addEventListener('resize', resize);
         window.addEventListener('orientationchange', resize);
@@ -145,6 +148,115 @@
             return `rgba(${r},${g},${b},${a})`;
         }
 
+        // Deterministic RNG so each color/variant bakes the same texture every build
+        function mulberry32(seed) {
+            return function() {
+                seed |= 0; seed = seed + 0x6D2B79F5 | 0;
+                let t = Math.imul(seed ^ seed >>> 15, 1 | seed);
+                t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+                return ((t ^ t >>> 14) >>> 0) / 4294967296;
+            };
+        }
+        function hashString(str) {
+            let h = 0;
+            for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) | 0;
+            return h;
+        }
+
+        // ─── Sound (synthesized WebAudio — no assets) ───
+        const AC = window.AudioContext || window.webkitAudioContext;
+        let audioCtx = null;
+        let soundOn = true;
+        try { soundOn = localStorage.getItem('plinkoSound') !== '0'; } catch (e) {}
+
+        function ensureAudio() {
+            if (!AC) return;
+            try {
+                if (!audioCtx) audioCtx = new AC();
+                if (audioCtx.state === 'suspended') audioCtx.resume();
+            } catch (e) {}
+        }
+
+        function tone(freq, endFreq, dur, type, vol, delay) {
+            if (!soundOn || !audioCtx) return;
+            try {
+                const t0 = audioCtx.currentTime + (delay || 0);
+                const osc = audioCtx.createOscillator();
+                const g = audioCtx.createGain();
+                osc.type = type || 'sine';
+                osc.frequency.setValueAtTime(freq, t0);
+                if (endFreq) osc.frequency.exponentialRampToValueAtTime(endFreq, t0 + dur);
+                g.gain.setValueAtTime(0, t0);
+                g.gain.linearRampToValueAtTime(vol, t0 + 0.005);
+                g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+                osc.connect(g); g.connect(audioCtx.destination);
+                osc.start(t0); osc.stop(t0 + dur + 0.02);
+            } catch (e) {}
+        }
+
+        let noiseBuf = null;
+        function noiseHit(dur, vol, freq, delay) {
+            if (!soundOn || !audioCtx) return;
+            try {
+                if (!noiseBuf) {
+                    noiseBuf = audioCtx.createBuffer(1, Math.floor(audioCtx.sampleRate * 0.3), audioCtx.sampleRate);
+                    const d = noiseBuf.getChannelData(0);
+                    for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+                }
+                const t0 = audioCtx.currentTime + (delay || 0);
+                const src = audioCtx.createBufferSource();
+                src.buffer = noiseBuf;
+                const f = audioCtx.createBiquadFilter();
+                f.type = 'bandpass'; f.frequency.value = freq; f.Q.value = 1.2;
+                const g = audioCtx.createGain();
+                g.gain.setValueAtTime(vol, t0);
+                g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+                src.connect(f); f.connect(g); g.connect(audioCtx.destination);
+                src.start(t0); src.stop(t0 + dur);
+            } catch (e) {}
+        }
+
+        let lastPegSfx = 0, lastThudSfx = 0;
+        function sfxPeg() {
+            const now = performance.now();
+            if (now - lastPegSfx < 35) return;
+            lastPegSfx = now;
+            tone(1400 + Math.random() * 800, 0, 0.035, 'triangle', 0.03);
+        }
+        function sfxThud() {
+            const now = performance.now();
+            if (now - lastThudSfx < 60) return;
+            lastThudSfx = now;
+            tone(240 + Math.random() * 60, 180, 0.05, 'sine', 0.03);
+        }
+        function sfxFill(comboN) {
+            tone(440 * Math.pow(1.059, Math.min(comboN, 12)), 0, 0.10, 'sine', 0.09);
+            noiseHit(0.05, 0.025, 4500);
+        }
+        function sfxPop() {
+            noiseHit(0.16, 0.12, 2800);
+            tone(900, 1500, 0.12, 'triangle', 0.07);
+        }
+        function sfxRow() {
+            [523, 659, 784, 1047].forEach((f, i) => tone(f, 0, 0.14, 'sine', 0.09, i * 0.06));
+        }
+        function sfxPerk() {
+            [700, 1050, 1400].forEach((f, i) => tone(f, 0, 0.10, 'triangle', 0.07, i * 0.05));
+        }
+        function sfxLaunch() {
+            tone(320, 190, 0.10, 'triangle', 0.045);
+        }
+        function sfxGameOver() {
+            [392, 311, 262, 196].forEach((f, i) => tone(f, 0, 0.25, 'sawtooth', 0.045, i * 0.15));
+        }
+        function toggleSound() {
+            soundOn = !soundOn;
+            try { localStorage.setItem('plinkoSound', soundOn ? '1' : '0'); } catch (e) {}
+            if (soundOn) { ensureAudio(); tone(660, 0, 0.08, 'sine', 0.08); }
+            soundToast = 90;
+        }
+        let soundToast = 0; // frames left to show "sound on/off"
+
         // ─── Game State ───
         let gameState = 'start'; // start, playing, gameover
         let score = 0;
@@ -163,7 +275,7 @@
 
         // ─── Active Perks ───
         const PERK_TYPES = ['slow', 'freeze', 'fire'];
-        const PERK_ICONS = { slow: '⏱', freeze: '❄', fire: '🔥' }; // ⏱ ❄ 🔥
+        const PERK_ICONS = { slow: '⏱', freeze: '❄', fire: '🔥' };
         const PERK_COLORS = {
             slow:   { bg: '#4488ff', glow: 'rgba(68,136,255,0.6)' },
             freeze: { bg: '#66ddff', glow: 'rgba(102,221,255,0.6)' },
@@ -253,7 +365,6 @@
         function s(v) { return v * scale; }
 
         function pickGameColors() {
-            // Pick NUM_GAME_COLORS unique colors for this session
             const available = [...COLOR_NAMES];
             gameColors = [];
             while (gameColors.length < NUM_GAME_COLORS) {
@@ -309,13 +420,11 @@
         }
 
         function syncBucketColors() {
-            // Ensure every bucket color exists in grid; if a color was cleared, replace it
             const activeColors = getActiveGridColors();
             if (activeColors.size === 0) return;
 
             for (let i = 0; i < buckets.length; i++) {
                 if (!activeColors.has(buckets[i].colorName)) {
-                    // Find a color in grid not already on a bucket
                     const usedColors = new Set(buckets.map(b => b.colorName));
                     let replacement = null;
                     for (const c of activeColors) {
@@ -334,15 +443,17 @@
             }
         }
 
-        // ─── Plinko Peg Board ───
+        // ─── Plinko Peg Board (deep field — the heart of the game) ───
         let pegs = [];
         const PEG_RADIUS = 5;
-        const PEG_ROWS = 6;
-        const PEG_COLS = 7;
+        const PEG_ROWS = 9;
+        const PEG_COLS = 8;
+        const PEG_TOP_BASE = 72;
+        const PEG_BOTTOM_BASE = 330;
 
         function layoutPegs() {
-            const pegAreaTop = s(70);
-            const pegAreaBottom = s(260);
+            const pegAreaTop = s(PEG_TOP_BASE);
+            const pegAreaBottom = s(PEG_BOTTOM_BASE);
             const rowSpacing = (pegAreaBottom - pegAreaTop) / (PEG_ROWS - 1);
             const colSpacing = (W - s(40)) / PEG_COLS;
             for (const peg of pegs) {
@@ -371,7 +482,6 @@
         }
 
         function spawnPerkPeg() {
-            // Pick a random normal peg and turn it into a perk
             const normalPegs = pegs.filter(p => !p.perk);
             if (normalPegs.length === 0) return;
             const peg = normalPegs[Math.floor(Math.random() * normalPegs.length)];
@@ -388,15 +498,16 @@
         const GRID_COLS = 6;
         const GRID_ROWS_VISIBLE = 6;   // rows kept on the board (also initial count)
         const DIVOTS_PER_BRICK = 3;
-        const BRICK_H_BASE = 50;
-        const GRID_TOP_BASE = 285;
+        const BRICK_H_BASE = 42;
+        const GRID_TOP_BASE = 350;
         const BRICK_GAP = 5;
+        const BRICK_VARIANTS = 3;      // baked texture variations per color
         let bricks = [];
         let brickW, brickH, gridOffsetX, gridStartY;
 
         function failY() { return H - s(56); }
         function divotGeom() {
-            const dR = s(6.5);
+            const dR = s(5.5);
             return { dR, spacing: dR * 2.6 };
         }
 
@@ -438,6 +549,7 @@
                     h: brickH - s(BRICK_GAP),
                     colorName,
                     color: COLORS[colorName].pastel,
+                    variant: Math.floor(Math.random() * BRICK_VARIANTS),
                     health: DIVOTS_PER_BRICK,
                     maxHealth: DIVOTS_PER_BRICK,
                     divots: [false, false, false],
@@ -511,6 +623,7 @@
                 score += 100 * level;
                 screenShake = 10;
             }
+            if (clearedRows.length) sfxRow();
 
             if (bricks.length === 0) {
                 // Whole board wiped — big bonus, fresh stack
@@ -529,10 +642,13 @@
             checkFail();
         }
 
-        // ─── Glass Sprite Cache ───
-        // All brick/ball rendering is pre-baked per color into offscreen
-        // canvases; per-frame drawing is just drawImage calls.
-        const sprites = {}; // colorName -> { brick, ball, flyBall, pad, w, h, ballR, flyR }
+        // ─── Cast-Glass Sprite Baking ───
+        // Venetian cast-glass look: saturated outer volume, inset face with a
+        // milky glowing core, hammered "jelly" texture, seeds/bubbles in the
+        // glass, caustic sparkles pooling at the bottom, colored light shadow.
+        // Everything is baked per color (x3 texture variants) into offscreen
+        // canvases; per-frame drawing is just drawImage.
+        const sprites = {}; // colorName -> { brick:[v0,v1,v2], bucket, ball, flyBall, pad, w, h, ballR, flyR, bpad }
 
         function roundRectPath(c, x, y, w, h, r) {
             r = Math.max(0, Math.min(r, w / 2, h / 2));
@@ -558,13 +674,222 @@
             return { cvs, c };
         }
 
-        // Concave socket pressed into the glass slab
+        // Draws one cast-glass slab at (0,0)..(w,h) on context c.
+        function drawCastGlass(c, w, h, r, col, rnd, detail) {
+            // ── Colored light pool (glass projects its color) + contact shadow ──
+            c.save();
+            c.shadowColor = hexA(col.mid, 0.55);
+            c.shadowBlur = s(10);
+            c.shadowOffsetY = s(4);
+            roundRectPath(c, 0, 0, w, h, r);
+            c.fillStyle = hexA(col.dark, 0.95);
+            c.fill();
+            c.restore();
+            c.save();
+            c.shadowColor = 'rgba(0,0,0,0.30)';
+            c.shadowBlur = s(4);
+            c.shadowOffsetY = s(2);
+            roundRectPath(c, 0, 0, w, h, r);
+            c.fillStyle = hexA(col.dark, 0.95);
+            c.fill();
+            c.restore();
+
+            // ── Outer volume: deep saturated cast glass ──
+            roundRectPath(c, 0, 0, w, h, r);
+            const outer = c.createLinearGradient(0, 0, 0, h);
+            outer.addColorStop(0, hexA(col.mid, 0.95));
+            outer.addColorStop(0.5, hexA(col.mid, 0.9));
+            outer.addColorStop(1, hexA(col.dark, 0.97));
+            c.fillStyle = outer;
+            c.fill();
+
+            // ── Inset front face ──
+            const t = s(4.5); // visible wall thickness
+            const fx = t, fy = t, fw = w - t * 2, fh = h - t * 2;
+            const fr = Math.max(1, r - s(2));
+
+            // face base: milky core glowing from within, denser color at rim
+            roundRectPath(c, fx, fy, fw, fh, fr);
+            const core = c.createRadialGradient(
+                w / 2, h / 2 + fh * 0.06, fw * 0.05,
+                w / 2, h / 2, fw * 0.62
+            );
+            core.addColorStop(0, hexA(col.pastel, 0.98));
+            core.addColorStop(0.55, hexA(col.mid, 0.95));
+            core.addColorStop(1, hexA(col.dark, 0.95));
+            c.fillStyle = core;
+            c.fill();
+            // inner glow — light shining through the slab
+            roundRectPath(c, fx, fy, fw, fh, fr);
+            const glow = c.createRadialGradient(
+                w / 2, h / 2, 0,
+                w / 2, h / 2, fw * 0.45
+            );
+            glow.addColorStop(0, 'rgba(255,255,255,0.40)');
+            glow.addColorStop(0.6, 'rgba(255,255,255,0.12)');
+            glow.addColorStop(1, 'rgba(255,255,255,0)');
+            c.fillStyle = glow;
+            c.fill();
+
+            // ── Hammered "jelly" texture, seeds, and caustic sparkles ──
+            c.save();
+            roundRectPath(c, fx, fy, fw, fh, fr);
+            c.clip();
+
+            // large slow undulations
+            for (let i = 0; i < 7; i++) {
+                const bx = fx + rnd() * fw;
+                const by = fy + rnd() * fh;
+                const br = s(9) + rnd() * s(10);
+                const light = rnd() < 0.5;
+                const a = 0.04 + rnd() * 0.05;
+                const g = c.createRadialGradient(bx, by, 0, bx, by, br);
+                g.addColorStop(0, light ? `rgba(255,255,255,${a})` : hexA(col.dark, a + 0.04));
+                g.addColorStop(1, 'rgba(0,0,0,0)');
+                c.fillStyle = g;
+                c.beginPath();
+                c.arc(bx, by, br, 0, Math.PI * 2);
+                c.fill();
+            }
+            // hammered dimples — the wavy orange-peel surface
+            const nBlobs = detail ? 85 : 40;
+            for (let i = 0; i < nBlobs; i++) {
+                const bx = fx + rnd() * fw;
+                const by = fy + rnd() * fh;
+                const br = s(1.6) + rnd() * s(4.2);
+                const light = rnd() < 0.55;
+                const a = 0.04 + rnd() * 0.07;
+                const g = c.createRadialGradient(
+                    bx - br * 0.35, by - br * 0.35, 0, bx, by, br);
+                if (light) {
+                    g.addColorStop(0, `rgba(255,255,255,${a})`);
+                    g.addColorStop(0.7, `rgba(255,255,255,${a * 0.3})`);
+                } else {
+                    g.addColorStop(0, hexA(col.dark, a + 0.05));
+                    g.addColorStop(0.7, hexA(col.dark, a * 0.4));
+                }
+                g.addColorStop(1, 'rgba(0,0,0,0)');
+                c.fillStyle = g;
+                c.beginPath();
+                c.arc(bx, by, br, 0, Math.PI * 2);
+                c.fill();
+            }
+            // vertical flow lines from the casting process
+            c.lineWidth = s(2.2);
+            for (let i = 0; i < (detail ? 4 : 2); i++) {
+                const lx = fx + fw * (0.15 + rnd() * 0.7);
+                c.strokeStyle = `rgba(255,255,255,${0.03 + rnd() * 0.04})`;
+                c.beginPath();
+                c.moveTo(lx, fy);
+                c.bezierCurveTo(
+                    lx + (rnd() - 0.5) * s(10), fy + fh * 0.33,
+                    lx + (rnd() - 0.5) * s(10), fy + fh * 0.66,
+                    lx + (rnd() - 0.5) * s(8), fy + fh);
+                c.stroke();
+            }
+            // seeds: tiny bubbles and specks trapped in the glass
+            const nSeeds = detail ? 12 : 6;
+            for (let i = 0; i < nSeeds; i++) {
+                const bx = fx + rnd() * fw;
+                const by = fy + rnd() * fh;
+                const br = s(0.4) + rnd() * s(0.7);
+                if (rnd() < 0.65) {
+                    c.fillStyle = `rgba(255,255,255,${0.18 + rnd() * 0.25})`;
+                } else {
+                    c.fillStyle = `rgba(0,0,30,${0.12 + rnd() * 0.12})`;
+                }
+                c.beginPath();
+                c.arc(bx, by, br, 0, Math.PI * 2);
+                c.fill();
+            }
+            // caustic glints pooling along the bottom edge — small and subtle
+            c.save();
+            c.globalCompositeOperation = 'lighter';
+            const nGlints = detail ? 3 : 2;
+            for (let i = 0; i < nGlints; i++) {
+                const gx = fx + fw * (0.15 + rnd() * 0.7);
+                const gy = fy + fh - s(2) - rnd() * s(3.5);
+                const gr = s(0.7) + rnd() * s(0.8);
+                const gg = c.createRadialGradient(gx, gy, 0, gx, gy, gr * 2);
+                gg.addColorStop(0, 'rgba(255,255,255,0.45)');
+                gg.addColorStop(0.5, hexA(col.pastel, 0.18));
+                gg.addColorStop(1, 'rgba(0,0,0,0)');
+                c.fillStyle = gg;
+                c.beginPath();
+                c.arc(gx, gy, gr * 2, 0, Math.PI * 2);
+                c.fill();
+                c.fillStyle = 'rgba(255,255,255,0.5)';
+                c.beginPath();
+                c.arc(gx, gy, gr * 0.5, 0, Math.PI * 2);
+                c.fill();
+            }
+            c.restore();
+            c.restore(); // face clip
+
+            // ── Wall shading: top wall catches light, bottom sits in shade ──
+            c.save();
+            roundRectPath(c, t / 2, t / 2, w - t, h - t, Math.max(1, r - t / 4));
+            const wall = c.createLinearGradient(0, 0, 0, h);
+            wall.addColorStop(0, 'rgba(255,255,255,0.22)');
+            wall.addColorStop(0.25, hexA(col.dark, 0.30));
+            wall.addColorStop(0.8, hexA(col.dark, 0.45));
+            wall.addColorStop(1, 'rgba(0,0,10,0.35)');
+            c.strokeStyle = wall;
+            c.lineWidth = t;
+            c.stroke();
+            c.restore();
+
+            // crisp inner edge around the face
+            roundRectPath(c, fx, fy, fw, fh, fr);
+            const faceRim = c.createLinearGradient(0, fy, 0, fy + fh);
+            faceRim.addColorStop(0, 'rgba(255,255,255,0.55)');
+            faceRim.addColorStop(0.5, 'rgba(255,255,255,0.12)');
+            faceRim.addColorStop(1, 'rgba(255,255,255,0.30)');
+            c.strokeStyle = faceRim;
+            c.lineWidth = s(1.1);
+            c.stroke();
+
+            // corner glints — sharp bright glass edges
+            c.lineCap = 'round';
+            c.lineWidth = s(1.2);
+            c.strokeStyle = 'rgba(255,255,255,0.55)';
+            c.beginPath();
+            c.arc(r, r, r * 0.75, Math.PI, Math.PI * 1.5);
+            c.stroke();
+            c.strokeStyle = 'rgba(255,255,255,0.35)';
+            c.beginPath();
+            c.arc(w - r, r, r * 0.75, Math.PI * 1.5, Math.PI * 2);
+            c.stroke();
+            c.strokeStyle = 'rgba(255,255,255,0.20)';
+            c.beginPath();
+            c.arc(r, h - r, r * 0.75, Math.PI * 0.5, Math.PI);
+            c.stroke();
+
+            // chromatic dispersion fringes on the outer rim
+            c.save();
+            c.globalCompositeOperation = 'screen';
+            c.lineWidth = s(1);
+            roundRectPath(c, -s(0.6), -s(0.4), w, h, r);
+            c.strokeStyle = 'rgba(255,70,70,0.22)';
+            c.stroke();
+            roundRectPath(c, s(0.6), s(0.4), w, h, r);
+            c.strokeStyle = 'rgba(70,120,255,0.22)';
+            c.stroke();
+            c.restore();
+
+            // outer border
+            roundRectPath(c, 0, 0, w, h, r);
+            c.strokeStyle = 'rgba(0,0,10,0.35)';
+            c.lineWidth = s(1);
+            c.stroke();
+        }
+
+        // Concave socket pressed into the glass face
         function drawRecess(c, x, y, R, col) {
             c.save();
             c.beginPath();
             c.arc(x, y, R, 0, Math.PI * 2);
             c.clip();
-            // depth: dark at the top wall, glass color brightening toward the bottom
             const depth = c.createLinearGradient(0, y - R, 0, y + R);
             depth.addColorStop(0, 'rgba(0,0,0,0.60)');
             depth.addColorStop(0.45, hexA(col.dark, 0.95));
@@ -572,27 +897,23 @@
             depth.addColorStop(1, hexA(col.pastel, 0.9));
             c.fillStyle = depth;
             c.fillRect(x - R, y - R, R * 2, R * 2);
-            // soft inner shadow hugging the upper wall
             const topShadow = c.createRadialGradient(x, y - R * 0.9, 0, x, y - R * 0.9, R * 1.4);
             topShadow.addColorStop(0, 'rgba(0,0,0,0.45)');
             topShadow.addColorStop(1, 'rgba(0,0,0,0)');
             c.fillStyle = topShadow;
             c.fillRect(x - R, y - R, R * 2, R * 2);
-            // bounce light pooling in the bottom of the cup
             const bounce = c.createRadialGradient(x, y + R * 0.75, 0, x, y + R * 0.75, R * 0.9);
             bounce.addColorStop(0, 'rgba(255,255,255,0.30)');
             bounce.addColorStop(1, 'rgba(255,255,255,0)');
             c.fillStyle = bounce;
             c.fillRect(x - R, y - R, R * 2, R * 2);
-            // tiny refracted specular inside the cup
             c.beginPath();
             c.arc(x + R * 0.30, y + R * 0.45, R * 0.16, 0, Math.PI * 2);
             c.fillStyle = 'rgba(255,255,255,0.65)';
             c.fill();
             c.restore();
 
-            // rim: dark upper arc, bright lower lip — reads as concave
-            c.lineWidth = s(1.2);
+            c.lineWidth = s(1.1);
             c.beginPath();
             c.arc(x, y, R, Math.PI * 1.15, Math.PI * 1.85);
             c.strokeStyle = 'rgba(0,0,0,0.45)';
@@ -601,149 +922,27 @@
             c.arc(x, y + s(0.6), R, Math.PI * 0.15, Math.PI * 0.85);
             c.strokeStyle = 'rgba(255,255,255,0.35)';
             c.stroke();
-            // chromatic fringe where light bends around the rim
             c.save();
             c.globalCompositeOperation = 'screen';
-            c.lineWidth = s(0.9);
+            c.lineWidth = s(0.8);
             c.beginPath();
             c.arc(x, y - s(0.5), R, 0, Math.PI * 2);
-            c.strokeStyle = 'rgba(255,80,80,0.25)';
+            c.strokeStyle = 'rgba(255,80,80,0.22)';
             c.stroke();
             c.beginPath();
             c.arc(x, y + s(0.5), R, 0, Math.PI * 2);
-            c.strokeStyle = 'rgba(80,130,255,0.25)';
+            c.strokeStyle = 'rgba(80,130,255,0.22)';
             c.stroke();
             c.restore();
         }
 
-        function renderBrickSprite(name, w, h, pad) {
+        function renderBrickSprite(name, w, h, pad, variant) {
             const col = COLORS[name];
+            const rnd = mulberry32(hashString(name) * 7919 + variant * 104729 + 12345);
             const { cvs, c } = makeSpriteCanvas(w + pad * 2, h + pad * 2);
             c.translate(pad, pad);
-            const r = Math.min(s(9), h * 0.28);
-
-            // ── Drop shadow cast onto the backdrop ──
-            c.save();
-            c.shadowColor = 'rgba(0,0,0,0.40)';
-            c.shadowBlur = s(7);
-            c.shadowOffsetY = s(3);
-            roundRectPath(c, 0, 0, w, h, r);
-            c.fillStyle = hexA(col.dark, 0.9);
-            c.fill();
-            c.restore();
-
-            // ── Translucent glass slab body ──
-            roundRectPath(c, 0, 0, w, h, r);
-            const body = c.createLinearGradient(0, 0, 0, h);
-            body.addColorStop(0, hexA(col.pastel, 0.52));
-            body.addColorStop(0.45, hexA(col.mid, 0.48));
-            body.addColorStop(1, hexA(col.dark, 0.66));
-            c.fillStyle = body;
-            c.fill();
-
-            // ── Refraction: inverted backdrop band + far wall of the slab ──
-            c.save();
-            roundRectPath(c, s(2), s(2), w - s(4), h - s(4), Math.max(1, r - s(1)));
-            c.clip();
-            const refr = c.createLinearGradient(0, h, 0, 0);
-            refr.addColorStop(0, 'rgba(255,255,255,0.10)');
-            refr.addColorStop(0.35, 'rgba(255,255,255,0.02)');
-            refr.addColorStop(1, 'rgba(0,0,0,0.14)');
-            c.fillStyle = refr;
-            c.fillRect(s(2), s(2), w - s(4), h - s(4));
-            roundRectPath(c, s(3.5), s(4), w - s(7), h - s(8), Math.max(1, r - s(2)));
-            c.strokeStyle = 'rgba(255,255,255,0.14)';
-            c.lineWidth = s(1.2);
-            c.stroke();
-            // caustic: light focused through the slab pools along the bottom
-            c.globalCompositeOperation = 'lighter';
-            const caus = c.createRadialGradient(w / 2, h * 0.9, 0, w / 2, h * 0.9, w * 0.42);
-            caus.addColorStop(0, hexA(col.pastel, 0.40));
-            caus.addColorStop(0.5, hexA(col.mid, 0.14));
-            caus.addColorStop(1, 'rgba(0,0,0,0)');
-            c.beginPath();
-            c.ellipse(w / 2, h * 0.9, w * 0.42, h * 0.30, 0, 0, Math.PI * 2);
-            c.fillStyle = caus;
-            c.fill();
-            c.restore();
-
-            // ── Diagonal glare streaks ──
-            c.save();
-            roundRectPath(c, 0, 0, w, h, r);
-            c.clip();
-            c.translate(w * 0.5, h * 0.5);
-            c.rotate(-0.5);
-            const g1 = c.createLinearGradient(-w * 0.45, 0, -w * 0.1, 0);
-            g1.addColorStop(0, 'rgba(255,255,255,0)');
-            g1.addColorStop(0.5, 'rgba(255,255,255,0.18)');
-            g1.addColorStop(1, 'rgba(255,255,255,0)');
-            c.fillStyle = g1;
-            c.fillRect(-w * 0.5, -h, w * 0.38, h * 2);
-            const g2 = c.createLinearGradient(-w * 0.05, 0, w * 0.14, 0);
-            g2.addColorStop(0, 'rgba(255,255,255,0)');
-            g2.addColorStop(0.5, 'rgba(255,255,255,0.28)');
-            g2.addColorStop(1, 'rgba(255,255,255,0)');
-            c.fillStyle = g2;
-            c.fillRect(-w * 0.06, -h, w * 0.2, h * 2);
-            c.restore();
-
-            // ── Top specular band + edge catch-light + glint ──
-            c.save();
-            roundRectPath(c, 0, 0, w, h, r);
-            c.clip();
-            const sh = h * 0.34;
-            const shine = c.createLinearGradient(0, 0, 0, sh);
-            shine.addColorStop(0, 'rgba(255,255,255,0.42)');
-            shine.addColorStop(0.6, 'rgba(255,255,255,0.10)');
-            shine.addColorStop(1, 'rgba(255,255,255,0)');
-            c.fillStyle = shine;
-            c.fillRect(0, 0, w, sh);
-            c.beginPath();
-            c.moveTo(r * 0.8, s(1.2));
-            c.lineTo(w - r * 0.8, s(1.2));
-            c.strokeStyle = 'rgba(255,255,255,0.75)';
-            c.lineWidth = s(1);
-            c.lineCap = 'round';
-            c.stroke();
-            const glint = c.createRadialGradient(w * 0.16, h * 0.18, 0, w * 0.16, h * 0.18, s(6));
-            glint.addColorStop(0, 'rgba(255,255,255,0.9)');
-            glint.addColorStop(1, 'rgba(255,255,255,0)');
-            c.fillStyle = glint;
-            c.beginPath();
-            c.arc(w * 0.16, h * 0.18, s(6), 0, Math.PI * 2);
-            c.fill();
-            c.restore();
-
-            // ── Chromatic dispersion fringes on the rim ──
-            c.save();
-            c.globalCompositeOperation = 'screen';
-            c.lineWidth = s(1.1);
-            roundRectPath(c, -s(0.7), -s(0.5), w, h, r);
-            c.strokeStyle = 'rgba(255,70,70,0.32)';
-            c.stroke();
-            roundRectPath(c, s(0.7), s(0.5), w, h, r);
-            c.strokeStyle = 'rgba(70,120,255,0.32)';
-            c.stroke();
-            roundRectPath(c, 0, 0, w, h, r);
-            c.strokeStyle = 'rgba(110,255,130,0.16)';
-            c.stroke();
-            c.restore();
-
-            // ── Bevel rim + outer border ──
-            roundRectPath(c, s(1), s(1), w - s(2), h - s(2), Math.max(1, r - s(0.5)));
-            const rim = c.createLinearGradient(0, 0, 0, h);
-            rim.addColorStop(0, 'rgba(255,255,255,0.55)');
-            rim.addColorStop(0.5, 'rgba(255,255,255,0.10)');
-            rim.addColorStop(1, hexA(col.pastel, 0.35));
-            c.strokeStyle = rim;
-            c.lineWidth = s(1.2);
-            c.stroke();
-            roundRectPath(c, 0, 0, w, h, r);
-            c.strokeStyle = 'rgba(0,0,0,0.30)';
-            c.lineWidth = s(1);
-            c.stroke();
-
-            // ── Empty divot sockets (filled balls drawn at runtime on top) ──
+            const r = Math.min(s(7), h * 0.24);
+            drawCastGlass(c, w, h, r, col, rnd, true);
             const { dR, spacing } = divotGeom();
             const startX = w / 2 - spacing * (DIVOTS_PER_BRICK - 1) / 2;
             for (let d = 0; d < DIVOTS_PER_BRICK; d++) {
@@ -752,12 +951,20 @@
             return cvs;
         }
 
+        function renderBucketSprite(name, w, h, pad) {
+            const col = COLORS[name];
+            const rnd = mulberry32(hashString(name) * 104729 + 777);
+            const { cvs, c } = makeSpriteCanvas(w + pad * 2, h + pad * 2);
+            c.translate(pad, pad);
+            drawCastGlass(c, w, h, s(12), col, rnd, false);
+            return cvs;
+        }
+
         // Glossy ball seated in a socket
         function renderDivotBallSprite(name, R, outerR) {
             const col = COLORS[name];
             const { cvs, c } = makeSpriteCanvas(outerR * 2, outerR * 2);
             const x = outerR, y = outerR;
-            // contact shadow ring
             const ring = c.createRadialGradient(x, y, R * 0.7, x, y, outerR);
             ring.addColorStop(0, 'rgba(0,0,0,0.40)');
             ring.addColorStop(1, 'rgba(0,0,0,0)');
@@ -765,7 +972,6 @@
             c.arc(x, y, outerR, 0, Math.PI * 2);
             c.fillStyle = ring;
             c.fill();
-            // sphere
             const g = c.createRadialGradient(x - R * 0.3, y - R * 0.35, R * 0.08, x, y, R);
             g.addColorStop(0, '#ffffff');
             g.addColorStop(0.2, col.pastel);
@@ -775,7 +981,6 @@
             c.arc(x, y, R, 0, Math.PI * 2);
             c.fillStyle = g;
             c.fill();
-            // specular dot
             const spec = c.createRadialGradient(x - R * 0.22, y - R * 0.28, 0, x - R * 0.22, y - R * 0.28, R * 0.32);
             spec.addColorStop(0, 'rgba(255,255,255,0.85)');
             spec.addColorStop(1, 'rgba(255,255,255,0)');
@@ -783,7 +988,6 @@
             c.arc(x - R * 0.22, y - R * 0.28, R * 0.32, 0, Math.PI * 2);
             c.fillStyle = spec;
             c.fill();
-            // bright rim
             c.beginPath();
             c.arc(x, y, R, 0, Math.PI * 2);
             c.strokeStyle = 'rgba(255,255,255,0.35)';
@@ -810,23 +1014,62 @@
         function buildSprites() {
             const w = brickW - s(BRICK_GAP);
             const h = brickH - s(BRICK_GAP);
-            const pad = s(10);
+            const pad = s(12);
+            const bpad = s(12);
             const { dR } = divotGeom();
             const ballR = dR + s(2.5);
             const flyR = s(BALL_RADIUS) + s(1);
             for (const name of COLOR_NAMES) {
+                const variants = [];
+                for (let v = 0; v < BRICK_VARIANTS; v++) {
+                    variants.push(renderBrickSprite(name, w, h, pad, v));
+                }
                 sprites[name] = {
-                    brick: renderBrickSprite(name, w, h, pad),
+                    brick: variants,
+                    bucket: renderBucketSprite(name, s(60), s(46), bpad),
                     ball: renderDivotBallSprite(name, dR + s(0.5), ballR),
                     flyBall: renderFlyBallSprite(name, s(BALL_RADIUS), flyR),
-                    pad, w, h, ballR, flyR,
+                    pad, w, h, ballR, flyR, bpad,
                 };
             }
+        }
+
+        // ─── Background (baked once per resize) ───
+        let bgSprite = null;
+        function buildBackground() {
+            const { cvs, c } = makeSpriteCanvas(W, H);
+            const bg = c.createLinearGradient(0, 0, 0, H);
+            bg.addColorStop(0, '#1a1230');
+            bg.addColorStop(1, '#0d0a1a');
+            c.fillStyle = bg;
+            c.fillRect(0, 0, W, H);
+            // soft stage light behind the peg field
+            const light = c.createRadialGradient(W / 2, s(200), 0, W / 2, s(200), W * 0.8);
+            light.addColorStop(0, 'rgba(160,140,255,0.10)');
+            light.addColorStop(0.5, 'rgba(160,140,255,0.03)');
+            light.addColorStop(1, 'rgba(0,0,0,0)');
+            c.fillStyle = light;
+            c.fillRect(0, 0, W, H);
+            // faint dust
+            for (let i = 0; i < 46; i++) {
+                c.fillStyle = `rgba(255,255,255,${0.03 + Math.random() * 0.09})`;
+                c.beginPath();
+                c.arc(Math.random() * W, Math.random() * H, s(0.4) + Math.random() * s(0.9), 0, Math.PI * 2);
+                c.fill();
+            }
+            // vignette
+            const vig = c.createRadialGradient(W / 2, H * 0.45, Math.min(W, H) * 0.4, W / 2, H * 0.5, Math.max(W, H) * 0.72);
+            vig.addColorStop(0, 'rgba(0,0,0,0)');
+            vig.addColorStop(1, 'rgba(0,0,0,0.42)');
+            c.fillStyle = vig;
+            c.fillRect(0, 0, W, H);
+            bgSprite = cvs;
         }
 
         // ─── Game Init ───
         function initGame() {
             if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+            ensureAudio();
             initPool();
             initParticles();
             score = 0;
@@ -854,6 +1097,7 @@
 
         function endGame() {
             gameState = 'gameover';
+            sfxGameOver();
             if (score > bestScore) {
                 bestScore = score;
                 try { localStorage.setItem('plinkoBricksBest', String(bestScore)); } catch (e) {}
@@ -867,7 +1111,7 @@
 
         // Rescale live game objects when the window size / DPR changes mid-game
         function relayout(oldScale) {
-            if (!oldScale || !isFinite(oldScale) || oldScale === scale && layoutReady === false) return;
+            if (!oldScale || !isFinite(oldScale)) return;
             const ratio = scale / oldScale;
             computeGridMetrics();
             for (const brick of bricks) {
@@ -918,6 +1162,7 @@
             bucket.tweenScale = 1.2;
             bucket.aimAngle = Math.max(-1, Math.min(1, aim));
             bucket.kb = !!kb;
+            sfxLaunch();
         }
 
         function pointerFire(x, y) {
@@ -929,6 +1174,7 @@
         }
 
         canvas.addEventListener('click', (e) => {
+            ensureAudio();
             if (gameState !== 'playing') return;
             const rect = canvas.getBoundingClientRect();
             pointerFire(e.clientX - rect.left, e.clientY - rect.top);
@@ -936,6 +1182,7 @@
 
         canvas.addEventListener('touchstart', (e) => {
             e.preventDefault();
+            ensureAudio();
             if (gameState !== 'playing') return;
             const rect = canvas.getBoundingClientRect();
             for (let i = 0; i < e.changedTouches.length; i++) {
@@ -965,6 +1212,8 @@
 
         window.addEventListener('keydown', (e) => {
             keyState[e.code] = true;
+            if (e.code === 'KeyM') { toggleSound(); return; }
+            ensureAudio();
             if (gameState !== 'playing') {
                 if (e.code === 'Enter' || e.code === 'Space') {
                     e.preventDefault();
@@ -991,8 +1240,10 @@
         const GRAVITY = 0.15;
         const BALL_RADIUS = 4;
         const BOUNCE_DAMP = 0.6;
+        const MAX_FALL = 7; // terminal velocity (base units) — prevents peg tunneling
 
         function update() {
+            if (soundToast > 0) soundToast--;
             if (gameState !== 'playing') return;
 
             // Screen shake decay
@@ -1056,12 +1307,14 @@
             }
 
             // Update balls
+            const maxFall = s(MAX_FALL);
             for (let i = 0; i < ballPool.length; i++) {
                 const b = ballPool[i];
                 if (!b.active) continue;
 
                 const grav = activePerks.slow > 0 ? GRAVITY * 0.4 : GRAVITY;
                 b.vy += grav * scale;
+                if (b.vy > maxFall) b.vy = maxFall;
                 b.x += b.vx;
                 b.y += b.vy;
 
@@ -1092,12 +1345,15 @@
                             activePerks[peg.perk] = PERK_DURATION;
                             spawnParticles(peg.x, peg.y, PERK_COLORS[peg.perk].bg, 12);
                             screenShake = 5;
+                            sfxPerk();
                             comboPopups.push({
                                 x: peg.x, y: peg.y - s(10),
                                 text: PERK_ICONS[peg.perk] + ' ' + peg.perk.toUpperCase() + '!',
                                 life: 1,
                             });
                             clearPerkFromPeg(peg);
+                        } else {
+                            sfxPeg();
                         }
                     }
                 }
@@ -1142,6 +1398,7 @@
                                 const multiplier = Math.min(combo, 10);
                                 const pts = 10 * multiplier;
                                 score += pts;
+                                sfxFill(combo);
                                 if (combo > 1) {
                                     comboPopups.push({
                                         x: brick.x + brick.w / 2,
@@ -1155,6 +1412,10 @@
                                     brick.popTimer = 12; // short delay before pop
                                 }
                             }
+                        } else {
+                            // wrong color: ball shatters with a little spray
+                            spawnParticles(b.x, b.y, b.color, 3);
+                            sfxThud();
                         }
 
                         deactivateBall(b);
@@ -1224,6 +1485,7 @@
                         score += 50 * brickMult;
                         spawnParticles(brick.x + brick.w / 2, brick.y + brick.h / 2, brick.color, 15);
                         screenShake = 4;
+                        sfxPop();
                     }
                 }
             }
@@ -1253,17 +1515,13 @@
             ctx.save();
             ctx.clearRect(0, 0, W, H);
 
-            // Background gradient
-            const bgGrad = ctx.createLinearGradient(0, 0, 0, H);
-            bgGrad.addColorStop(0, '#1a1230');
-            bgGrad.addColorStop(1, '#0d0a1a');
-            ctx.fillStyle = bgGrad;
-            ctx.fillRect(0, 0, W, H);
+            // Background (baked)
+            if (bgSprite) ctx.drawImage(bgSprite, 0, 0, W, H);
 
             // Apply screen shake
             ctx.translate(screenShakeX, screenShakeY);
 
-            // Draw buckets
+            // Draw buckets (cast-glass sprites + dynamic overlays)
             for (const bucket of buckets) {
                 ctx.save();
                 const cx = bucket.x + bucket.w / 2;
@@ -1273,44 +1531,12 @@
                 ctx.translate(-cx, -cy);
 
                 const col = COLORS[bucket.colorName];
-                const bR = s(14);
-
-                // Drop shadow
-                ctx.shadowColor = 'rgba(0,0,0,0.2)';
-                ctx.shadowBlur = s(6);
-                ctx.shadowOffsetY = s(2);
-                drawRoundRect(bucket.x, bucket.y, bucket.w, bucket.h, bR);
-                ctx.fillStyle = col.dark;
-                ctx.fill();
-                ctx.shadowColor = 'transparent';
-                ctx.shadowBlur = 0;
-                ctx.shadowOffsetY = 0;
-
-                // Glass body
-                const grad = ctx.createLinearGradient(bucket.x, bucket.y, bucket.x, bucket.y + bucket.h);
-                grad.addColorStop(0, col.pastel);
-                grad.addColorStop(0.5, col.mid);
-                grad.addColorStop(1, col.dark);
-                drawRoundRect(bucket.x, bucket.y, bucket.w, bucket.h, bR);
-                ctx.fillStyle = grad;
-                ctx.fill();
-
-                // Specular shine band
-                ctx.save();
-                drawRoundRect(bucket.x, bucket.y, bucket.w, bucket.h, bR);
-                ctx.clip();
-                const shGrad = ctx.createLinearGradient(bucket.x, bucket.y, bucket.x, bucket.y + bucket.h * 0.4);
-                shGrad.addColorStop(0, 'rgba(255,255,255,0.45)');
-                shGrad.addColorStop(1, 'rgba(255,255,255,0)');
-                ctx.fillStyle = shGrad;
-                ctx.fillRect(bucket.x, bucket.y, bucket.w, bucket.h * 0.4);
-                ctx.restore();
-
-                // Inner highlight border
-                drawRoundRect(bucket.x + s(1), bucket.y + s(1), bucket.w - s(2), bucket.h - s(2), bR - s(0.5));
-                ctx.strokeStyle = 'rgba(255,255,255,0.3)';
-                ctx.lineWidth = s(1.5);
-                ctx.stroke();
+                const spr = sprites[bucket.colorName];
+                if (spr && spr.bucket) {
+                    ctx.drawImage(spr.bucket,
+                        bucket.x - spr.bpad, bucket.y - spr.bpad,
+                        bucket.w + spr.bpad * 2, bucket.h + spr.bpad * 2);
+                }
 
                 // Bucket nozzle with aim indicator
                 ctx.beginPath();
@@ -1336,11 +1562,13 @@
                     ctx.fill();
                 }
 
-                // Label
-                ctx.fillStyle = '#fff';
+                // Label (soft shadow for contrast on the light glass core)
                 ctx.font = `bold ${s(10)}px sans-serif`;
                 ctx.textAlign = 'center';
                 ctx.textBaseline = 'middle';
+                ctx.fillStyle = 'rgba(0,0,20,0.45)';
+                ctx.fillText(bucket.colorName.toUpperCase(), cx + s(0.7), cy - s(3.3));
+                ctx.fillStyle = '#fff';
                 ctx.fillText(bucket.colorName.toUpperCase(), cx, cy - s(4));
 
                 // Ammo bar
@@ -1349,11 +1577,9 @@
                 const barX = bucket.x + s(6);
                 const barY = bucket.y + bucket.h - s(10);
                 const fill = bucket.ammo / bucket.maxAmmo;
-                // Background
                 ctx.fillStyle = 'rgba(0,0,0,0.35)';
                 drawRoundRect(barX, barY, barW, barH, s(2));
                 ctx.fill();
-                // Fill
                 if (fill > 0) {
                     const fillColor = fill > 0.3 ? col.pastel : '#ff4444';
                     ctx.fillStyle = fillColor;
@@ -1375,13 +1601,11 @@
                     const pulse = 1 + Math.sin(Date.now() / 200) * 0.08;
                     const ppr = pr * pulse;
 
-                    // Outer glow
                     ctx.beginPath();
                     ctx.arc(peg.x, peg.y, ppr + s(10), 0, Math.PI * 2);
                     ctx.fillStyle = pc.glow;
                     ctx.fill();
 
-                    // Body
                     const pGrad = ctx.createRadialGradient(
                         peg.x - ppr * 0.3, peg.y - ppr * 0.3, 0,
                         peg.x, peg.y, ppr
@@ -1394,12 +1618,10 @@
                     ctx.fillStyle = pGrad;
                     ctx.fill();
 
-                    // Border
                     ctx.strokeStyle = 'rgba(255,255,255,0.6)';
                     ctx.lineWidth = s(1.5);
                     ctx.stroke();
 
-                    // Icon
                     ctx.fillStyle = '#fff';
                     ctx.font = `${s(10)}px sans-serif`;
                     ctx.textAlign = 'center';
@@ -1463,7 +1685,7 @@
                 }
             }
 
-            // Draw bricks (pre-baked glass sprites)
+            // Draw bricks (pre-baked cast-glass sprites)
             const now = Date.now() / 1000;
             for (const brick of bricks) {
                 if (!brick.active) continue;
@@ -1476,9 +1698,9 @@
                     popScale = 1 + (1 - brick.popTimer / 12) * 0.3;
                     ctx.globalAlpha = brick.popTimer / 12;
                 }
-                const jellyT = now * 2.0 + brick.jellyPhase;
-                const jellyX = 1 + Math.sin(jellyT) * 0.012;
-                const jellyY = 1 + Math.cos(jellyT) * 0.012;
+                const jellyT = now * 2.2 + brick.jellyPhase;
+                const jellyX = 1 + Math.sin(jellyT) * 0.016;
+                const jellyY = 1 + Math.cos(jellyT) * 0.016;
                 const pulse = brick.pulseTimer > 0 ? 1 + Math.sin(brick.pulseTimer * 0.8) * 0.10 : 1;
                 const sx = pulse * popScale * jellyX;
                 const sy = pulse * popScale * jellyY;
@@ -1490,7 +1712,8 @@
                     ctx.translate(-bcx, -bcy);
                 }
 
-                ctx.drawImage(spr.brick,
+                const img = spr.brick[brick.variant] || spr.brick[0];
+                ctx.drawImage(img,
                     brick.x - spr.pad, brick.y - spr.pad,
                     spr.w + spr.pad * 2, spr.h + spr.pad * 2);
 
@@ -1539,6 +1762,17 @@
 
             ctx.textAlign = 'right';
             ctx.fillText(`Level ${level}`, W - s(10), H - s(28));
+
+            // Sound toggle toast
+            if (soundToast > 0) {
+                ctx.globalAlpha = Math.min(1, soundToast / 30);
+                ctx.fillStyle = '#fff';
+                ctx.font = `bold ${s(13)}px sans-serif`;
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'top';
+                ctx.fillText(soundOn ? '🔊 Sound on' : '🔇 Sound off', W / 2, s(64));
+                ctx.globalAlpha = 1;
+            }
 
             // Active perk indicators
             let perkIdx = 0;
