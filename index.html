@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>Plinko Bricks</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -12,6 +12,9 @@
             overflow: hidden;
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             touch-action: none;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
         }
         canvas {
             display: block;
@@ -31,7 +34,8 @@
             background: rgba(30, 20, 50, 0.95);
             border: 2px solid rgba(255,255,255,0.15);
             border-radius: 20px;
-            padding: 40px 50px;
+            padding: 36px 44px;
+            max-width: 92vw;
             text-align: center;
             color: #fff;
         }
@@ -40,6 +44,7 @@
         .panel h2 { font-size: 22px; margin-bottom: 6px; color: #c0e0f0; }
         .panel p { font-size: 15px; color: #aaa; margin-bottom: 18px; line-height: 1.5; }
         .panel .score-display { font-size: 36px; color: #ffd700; margin: 10px 0; }
+        .panel .best { color: #7ddfb0; font-size: 14px; }
         .btn {
             padding: 14px 40px;
             font-size: 18px;
@@ -60,16 +65,18 @@
     <div id="overlay" class="active">
         <div id="startPanel" class="panel visible">
             <h1>Plinko Bricks</h1>
-            <p>Tap buckets to drop balls — aim left or right!<br>
-            Hit glowing perk pegs for power-ups.<br>
-            Match ball colors to bricks to destroy them.<br>
-            Chain hits for combos. Clear rows to level up!</p>
+            <p>Tap or click a bucket to drop balls — tap its left/right side to aim.<br>
+            Keyboard: <b>1–5</b> fire buckets, hold <b>&larr;/&rarr;</b> to aim.<br>
+            Match ball colors to the glass bricks to fill their sockets.<br>
+            Hit glowing pegs for power-ups. Chain hits for combos.<br>
+            Clear rows before the glass stack reaches the bottom!</p>
             <button class="btn" id="startBtn">Start Game</button>
         </div>
         <div id="gameOverPanel" class="panel">
             <h2>Game Over</h2>
             <div class="score-display" id="finalScore">0</div>
             <p id="finalLevel">Level 1</p>
+            <p class="best" id="bestScore"></p>
             <button class="btn" id="restartBtn">Play Again</button>
         </div>
     </div>
@@ -86,10 +93,12 @@
         const gameOverPanel = document.getElementById('gameOverPanel');
         const finalScoreEl = document.getElementById('finalScore');
         const finalLevelEl = document.getElementById('finalLevel');
+        const bestScoreEl = document.getElementById('bestScore');
 
-        let W, H, scale;
+        let W, H, scale = 1, DPR = 1;
         const BASE_W = 420;
         const BASE_H = 750;
+        let layoutReady = false;
 
         function resize() {
             const aspect = BASE_W / BASE_H;
@@ -100,34 +109,48 @@
                 W = window.innerWidth;
                 H = W / aspect;
             }
-            canvas.width = W;
-            canvas.height = H;
+            DPR = Math.min(window.devicePixelRatio || 1, 3);
+            canvas.width = Math.max(1, Math.round(W * DPR));
+            canvas.height = Math.max(1, Math.round(H * DPR));
+            canvas.style.width = W + 'px';
+            canvas.style.height = H + 'px';
             canvas.style.left = ((window.innerWidth - W) / 2) + 'px';
             canvas.style.top = ((window.innerHeight - H) / 2) + 'px';
+            const oldScale = scale;
             scale = W / BASE_W;
+            if (layoutReady) relayout(oldScale);
         }
         window.addEventListener('resize', resize);
-        resize();
+        window.addEventListener('orientationchange', resize);
 
-        // ─── iOS 26 Liquid Glass Colors ───
+        // ─── Colors ───
         const COLORS = {
-            red:    { pastel: '#ff8a8a', mid: '#ff6b6b', dark: '#d94040', glass: 'rgba(255,120,120,0.45)' },
-            orange: { pastel: '#ffb474', mid: '#ff9a52', dark: '#cc7030', glass: 'rgba(255,160,90,0.45)' },
-            yellow: { pastel: '#ffe66a', mid: '#ffd93d', dark: '#c4a820', glass: 'rgba(255,225,80,0.45)' },
-            green:  { pastel: '#7ddfb0', mid: '#5cc98a', dark: '#3a9a60', glass: 'rgba(100,210,150,0.45)' },
-            blue:   { pastel: '#82b4ff', mid: '#5a95ff', dark: '#3060c0', glass: 'rgba(100,160,255,0.45)' },
-            indigo: { pastel: '#a893e0', mid: '#8a72d0', dark: '#5a40a0', glass: 'rgba(140,120,220,0.45)' },
-            violet: { pastel: '#cc85f0', mid: '#b560e0', dark: '#8040b0', glass: 'rgba(190,120,240,0.45)' },
-            pink:   { pastel: '#ff9ec0', mid: '#ff78a8', dark: '#c84878', glass: 'rgba(255,140,190,0.45)' },
+            red:    { pastel: '#ff8a8a', mid: '#ff6b6b', dark: '#d94040' },
+            orange: { pastel: '#ffb474', mid: '#ff9a52', dark: '#cc7030' },
+            yellow: { pastel: '#ffe66a', mid: '#ffd93d', dark: '#c4a820' },
+            green:  { pastel: '#7ddfb0', mid: '#5cc98a', dark: '#3a9a60' },
+            blue:   { pastel: '#82b4ff', mid: '#5a95ff', dark: '#3060c0' },
+            indigo: { pastel: '#a893e0', mid: '#8a72d0', dark: '#5a40a0' },
+            violet: { pastel: '#cc85f0', mid: '#b560e0', dark: '#8040b0' },
+            pink:   { pastel: '#ff9ec0', mid: '#ff78a8', dark: '#c84878' },
         };
         const COLOR_NAMES = Object.keys(COLORS);
         const NUM_GAME_COLORS = 5; // how many colors active at once (matches NUM_BUCKETS)
         let gameColors = []; // the 5 active color names
 
+        function hexA(hex, a) {
+            const r = parseInt(hex.slice(1, 3), 16);
+            const g = parseInt(hex.slice(3, 5), 16);
+            const b = parseInt(hex.slice(5, 7), 16);
+            return `rgba(${r},${g},${b},${a})`;
+        }
+
         // ─── Game State ───
         let gameState = 'start'; // start, playing, gameover
         let score = 0;
         let level = 1;
+        let bestScore = 0;
+        try { bestScore = parseInt(localStorage.getItem('plinkoBricksBest'), 10) || 0; } catch (e) {}
         let screenShake = 0;
         let screenShakeX = 0;
         let screenShakeY = 0;
@@ -140,7 +163,7 @@
 
         // ─── Active Perks ───
         const PERK_TYPES = ['slow', 'freeze', 'fire'];
-        const PERK_ICONS = { slow: '\u23F1', freeze: '\u2744', fire: '\uD83D\uDD25' }; // ⏱ ❄ 🔥
+        const PERK_ICONS = { slow: '⏱', freeze: '❄', fire: '🔥' }; // ⏱ ❄ 🔥
         const PERK_COLORS = {
             slow:   { bg: '#4488ff', glow: 'rgba(68,136,255,0.6)' },
             freeze: { bg: '#66ddff', glow: 'rgba(102,221,255,0.6)' },
@@ -178,7 +201,6 @@
                     b.radius = radius;
                     b.colorName = colorName;
                     b.color = COLORS[colorName].pastel;
-                    b.multiplied = false;
                     activeBalls++;
                     return b;
                 }
@@ -240,18 +262,24 @@
             }
         }
 
-        function initBuckets() {
-            buckets = [];
+        function layoutBuckets() {
             const bucketW = s(60);
             const bucketH = s(46);
             const totalW = NUM_BUCKETS * bucketW;
             const gap = (W - totalW) / (NUM_BUCKETS + 1);
+            for (let i = 0; i < buckets.length; i++) {
+                buckets[i].x = gap + i * (bucketW + gap);
+                buckets[i].y = s(10);
+                buckets[i].w = bucketW;
+                buckets[i].h = bucketH;
+            }
+        }
+
+        function initBuckets() {
+            buckets = [];
             for (let i = 0; i < NUM_BUCKETS; i++) {
                 buckets.push({
-                    x: gap + i * (bucketW + gap),
-                    y: s(10),
-                    w: bucketW,
-                    h: bucketH,
+                    x: 0, y: 0, w: 0, h: 0,
                     colorName: gameColors[i],
                     color: COLORS[gameColors[i]].pastel,
                     tweenScale: 1,
@@ -266,8 +294,10 @@
                     rechargeTimer: 0,
                     rechargeRate: 12,
                     aimAngle: 0, // -1 (left) to +1 (right)
+                    kb: false,   // last fired via keyboard (aim follows arrow keys)
                 });
             }
+            layoutBuckets();
         }
 
         function getActiveGridColors() {
@@ -310,20 +340,26 @@
         const PEG_ROWS = 6;
         const PEG_COLS = 7;
 
-        function initPegs() {
-            pegs = [];
+        function layoutPegs() {
             const pegAreaTop = s(70);
             const pegAreaBottom = s(260);
             const rowSpacing = (pegAreaBottom - pegAreaTop) / (PEG_ROWS - 1);
-            const colSpacing = (W - s(40)) / (PEG_COLS);
+            const colSpacing = (W - s(40)) / PEG_COLS;
+            for (const peg of pegs) {
+                const offsetX = (peg.row % 2 === 0) ? s(20) + colSpacing / 2 : s(20) + colSpacing;
+                peg.x = offsetX + peg.col * colSpacing;
+                peg.y = pegAreaTop + peg.row * rowSpacing;
+                peg.radius = s(PEG_RADIUS * (peg.perk ? 1.8 : 1));
+            }
+        }
 
+        function initPegs() {
+            pegs = [];
             for (let row = 0; row < PEG_ROWS; row++) {
                 const cols = (row % 2 === 0) ? PEG_COLS : PEG_COLS - 1;
-                const offsetX = (row % 2 === 0) ? s(20) + colSpacing / 2 : s(20) + colSpacing;
                 for (let col = 0; col < cols; col++) {
                     pegs.push({
-                        x: offsetX + col * colSpacing,
-                        y: pegAreaTop + row * rowSpacing,
+                        x: 0, y: 0,
                         radius: s(PEG_RADIUS),
                         hitTimer: 0,
                         perk: null, // null = normal peg, or 'slow'/'freeze'/'fire'
@@ -331,6 +367,7 @@
                     });
                 }
             }
+            layoutPegs();
         }
 
         function spawnPerkPeg() {
@@ -348,19 +385,31 @@
         }
 
         // ─── Bricks Grid ───
-        const GRID_COLS = 5;
-        const GRID_ROWS_VISIBLE = 6;
+        const GRID_COLS = 6;
+        const GRID_ROWS_VISIBLE = 6;   // rows kept on the board (also initial count)
         const DIVOTS_PER_BRICK = 3;
+        const BRICK_H_BASE = 50;
+        const GRID_TOP_BASE = 285;
+        const BRICK_GAP = 5;
         let bricks = [];
         let brickW, brickH, gridOffsetX, gridStartY;
 
+        function failY() { return H - s(56); }
+        function divotGeom() {
+            const dR = s(6.5);
+            return { dR, spacing: dR * 2.6 };
+        }
+
+        function computeGridMetrics() {
+            brickW = (W - s(16)) / GRID_COLS;
+            brickH = s(BRICK_H_BASE);
+            gridOffsetX = s(8);
+            gridStartY = s(GRID_TOP_BASE);
+        }
+
         function initGrid() {
             bricks = [];
-            brickW = (W - s(16)) / GRID_COLS;
-            brickH = s(68);
-            gridOffsetX = s(8);
-            gridStartY = s(280);
-
+            computeGridMetrics();
             for (let row = 0; row < GRID_ROWS_VISIBLE; row++) {
                 spawnBrickRow(row);
             }
@@ -378,16 +427,17 @@
 
             for (let col = 0; col < GRID_COLS; col++) {
                 const colorName = rowColors[col % rowColors.length];
+                const ty = gridStartY + row * brickH;
                 bricks.push({
                     active: true,
                     row, col,
                     x: gridOffsetX + col * brickW,
-                    y: gridStartY + row * brickH,
-                    w: brickW - s(3),
-                    h: brickH - s(3),
+                    y: ty - brickH * 0.4, // slide-in from above
+                    ty,
+                    w: brickW - s(BRICK_GAP),
+                    h: brickH - s(BRICK_GAP),
                     colorName,
                     color: COLORS[colorName].pastel,
-                    darkColor: COLORS[colorName].dark,
                     health: DIVOTS_PER_BRICK,
                     maxHealth: DIVOTS_PER_BRICK,
                     divots: [false, false, false],
@@ -398,92 +448,385 @@
             }
         }
 
-        function checkRowCleared() {
-            // Check each row: if ALL divots in ALL bricks of a row are filled, row is cleared
-            const rowBricks = {};
+        function applyRowTargets() {
             for (const brick of bricks) {
-                if (!brick.active) continue;
-                if (!rowBricks[brick.row]) rowBricks[brick.row] = [];
-                rowBricks[brick.row].push(brick);
+                brick.ty = gridStartY + brick.row * brickH;
             }
+        }
 
-            let cleared = false;
-            for (const row in rowBricks) {
-                const rowArr = rowBricks[row];
-                // A row is "filled" when every brick in it has all divots filled (popping or already done)
-                const allFilled = rowArr.every(b => b.health <= 0);
-                if (allFilled) {
-                    cleared = true;
-                    // Mark all bricks in this row for popping if not already
-                    for (const b of rowArr) {
-                        if (b.popTimer <= 0 && b.active) {
-                            b.popTimer = 12;
-                        }
-                    }
-                }
-            }
-
-            // Remove fully popped bricks
-            const hadPops = bricks.some(b => !b.active);
-            bricks = bricks.filter(b => b.active);
-
-            if (cleared || hadPops) {
-                // Check if any rows are now completely gone
-                const remainingRows = new Set(bricks.map(b => b.row));
-                const sortedRows = [...remainingRows].sort((a, b) => a - b);
-
-                // Compact rows: reassign row indices to be contiguous from bottom
-                if (sortedRows.length > 0) {
-                    // Remap rows so they stack from bottom
-                    const maxRow = GRID_ROWS_VISIBLE - 1;
-                    const offset = maxRow - (sortedRows.length - 1);
-                    for (let i = 0; i < sortedRows.length; i++) {
-                        const oldRow = sortedRows[i];
-                        const newRow = offset + i;
-                        for (const brick of bricks) {
-                            if (brick.row === oldRow) {
-                                brick.row = newRow;
-                                brick.y = gridStartY + newRow * brickH;
-                            }
-                        }
-                    }
-                }
-
-                // If we have fewer rows than GRID_ROWS_VISIBLE, spawn new rows at top and push down
-                const currentRowCount = new Set(bricks.map(b => b.row)).size;
-                const rowsToAdd = GRID_ROWS_VISIBLE - currentRowCount;
-
-                if (rowsToAdd > 0) {
-                    // Push all existing bricks down by rowsToAdd
-                    for (const brick of bricks) {
-                        brick.row += rowsToAdd;
-                        brick.y = gridStartY + brick.row * brickH;
-                    }
-                    // Spawn new rows at the top
-                    for (let r = 0; r < rowsToAdd; r++) {
-                        spawnBrickRow(r);
-                    }
-
-                    level++;
-                    score += 100 * level;
-                    screenShake = 10;
-
-                    // Reassign bucket colors based on new grid
-                    syncBucketColors();
-                }
-            }
-
-            // Check game over: if any brick goes below screen
+        function checkFail() {
+            if (gameState !== 'playing') return;
+            const fy = failY();
             for (const brick of bricks) {
-                if (brick.active && brick.y + brick.h > H) {
+                if (brick.ty + brick.h > fy) {
                     endGame();
                     return;
                 }
             }
         }
 
+        // A new row slides in at the top; everything else shifts one row down.
+        function pushRow(shake) {
+            if (bricks.length === 0) {
+                spawnBrickRow(0);
+                return;
+            }
+            let minRow = Infinity;
+            for (const b of bricks) {
+                b.row++;
+                if (b.row < minRow) minRow = b.row;
+            }
+            spawnBrickRow(minRow - 1);
+            applyRowTargets();
+            if (shake) screenShake = 6;
+            checkFail();
+        }
+
+        function pushIntervalFrames() {
+            return Math.max(1500 - (level - 1) * 90, 600);
+        }
+        let pushTimer = 0;
+        let pushIntervalCur = 1500;
+
+        // Remove popped bricks; when a whole row is gone, rows below it rise
+        // one step (pressure relief) and the board is refilled from the top.
+        function updateRows() {
+            let anyInactive = false;
+            const before = new Set();
+            for (const b of bricks) {
+                before.add(b.row);
+                if (!b.active) anyInactive = true;
+            }
+            if (!anyInactive) return;
+
+            bricks = bricks.filter(b => b.active);
+            const after = new Set(bricks.map(b => b.row));
+            const clearedRows = [...before].filter(r => !after.has(r)).sort((a, b) => b - a);
+
+            for (const r of clearedRows) {
+                for (const b of bricks) {
+                    if (b.row > r) b.row--;
+                }
+                level++;
+                score += 100 * level;
+                screenShake = 10;
+            }
+
+            if (bricks.length === 0) {
+                // Whole board wiped — big bonus, fresh stack
+                score += 500 * level;
+                for (let r = 0; r < GRID_ROWS_VISIBLE; r++) spawnBrickRow(r);
+            } else {
+                let rowCount = new Set(bricks.map(b => b.row)).size;
+                while (rowCount < GRID_ROWS_VISIBLE) {
+                    pushRow(false);
+                    rowCount++;
+                }
+            }
+
+            applyRowTargets();
+            syncBucketColors();
+            checkFail();
+        }
+
+        // ─── Glass Sprite Cache ───
+        // All brick/ball rendering is pre-baked per color into offscreen
+        // canvases; per-frame drawing is just drawImage calls.
+        const sprites = {}; // colorName -> { brick, ball, flyBall, pad, w, h, ballR, flyR }
+
+        function roundRectPath(c, x, y, w, h, r) {
+            r = Math.max(0, Math.min(r, w / 2, h / 2));
+            c.beginPath();
+            c.moveTo(x + r, y);
+            c.lineTo(x + w - r, y);
+            c.quadraticCurveTo(x + w, y, x + w, y + r);
+            c.lineTo(x + w, y + h - r);
+            c.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+            c.lineTo(x + r, y + h);
+            c.quadraticCurveTo(x, y + h, x, y + h - r);
+            c.lineTo(x, y + r);
+            c.quadraticCurveTo(x, y, x + r, y);
+            c.closePath();
+        }
+
+        function makeSpriteCanvas(w, h) {
+            const cvs = document.createElement('canvas');
+            cvs.width = Math.max(1, Math.ceil(w * DPR));
+            cvs.height = Math.max(1, Math.ceil(h * DPR));
+            const c = cvs.getContext('2d');
+            c.scale(DPR, DPR);
+            return { cvs, c };
+        }
+
+        // Concave socket pressed into the glass slab
+        function drawRecess(c, x, y, R, col) {
+            c.save();
+            c.beginPath();
+            c.arc(x, y, R, 0, Math.PI * 2);
+            c.clip();
+            // depth: dark at the top wall, glass color brightening toward the bottom
+            const depth = c.createLinearGradient(0, y - R, 0, y + R);
+            depth.addColorStop(0, 'rgba(0,0,0,0.60)');
+            depth.addColorStop(0.45, hexA(col.dark, 0.95));
+            depth.addColorStop(0.8, hexA(col.mid, 0.95));
+            depth.addColorStop(1, hexA(col.pastel, 0.9));
+            c.fillStyle = depth;
+            c.fillRect(x - R, y - R, R * 2, R * 2);
+            // soft inner shadow hugging the upper wall
+            const topShadow = c.createRadialGradient(x, y - R * 0.9, 0, x, y - R * 0.9, R * 1.4);
+            topShadow.addColorStop(0, 'rgba(0,0,0,0.45)');
+            topShadow.addColorStop(1, 'rgba(0,0,0,0)');
+            c.fillStyle = topShadow;
+            c.fillRect(x - R, y - R, R * 2, R * 2);
+            // bounce light pooling in the bottom of the cup
+            const bounce = c.createRadialGradient(x, y + R * 0.75, 0, x, y + R * 0.75, R * 0.9);
+            bounce.addColorStop(0, 'rgba(255,255,255,0.30)');
+            bounce.addColorStop(1, 'rgba(255,255,255,0)');
+            c.fillStyle = bounce;
+            c.fillRect(x - R, y - R, R * 2, R * 2);
+            // tiny refracted specular inside the cup
+            c.beginPath();
+            c.arc(x + R * 0.30, y + R * 0.45, R * 0.16, 0, Math.PI * 2);
+            c.fillStyle = 'rgba(255,255,255,0.65)';
+            c.fill();
+            c.restore();
+
+            // rim: dark upper arc, bright lower lip — reads as concave
+            c.lineWidth = s(1.2);
+            c.beginPath();
+            c.arc(x, y, R, Math.PI * 1.15, Math.PI * 1.85);
+            c.strokeStyle = 'rgba(0,0,0,0.45)';
+            c.stroke();
+            c.beginPath();
+            c.arc(x, y + s(0.6), R, Math.PI * 0.15, Math.PI * 0.85);
+            c.strokeStyle = 'rgba(255,255,255,0.35)';
+            c.stroke();
+            // chromatic fringe where light bends around the rim
+            c.save();
+            c.globalCompositeOperation = 'screen';
+            c.lineWidth = s(0.9);
+            c.beginPath();
+            c.arc(x, y - s(0.5), R, 0, Math.PI * 2);
+            c.strokeStyle = 'rgba(255,80,80,0.25)';
+            c.stroke();
+            c.beginPath();
+            c.arc(x, y + s(0.5), R, 0, Math.PI * 2);
+            c.strokeStyle = 'rgba(80,130,255,0.25)';
+            c.stroke();
+            c.restore();
+        }
+
+        function renderBrickSprite(name, w, h, pad) {
+            const col = COLORS[name];
+            const { cvs, c } = makeSpriteCanvas(w + pad * 2, h + pad * 2);
+            c.translate(pad, pad);
+            const r = Math.min(s(9), h * 0.28);
+
+            // ── Drop shadow cast onto the backdrop ──
+            c.save();
+            c.shadowColor = 'rgba(0,0,0,0.40)';
+            c.shadowBlur = s(7);
+            c.shadowOffsetY = s(3);
+            roundRectPath(c, 0, 0, w, h, r);
+            c.fillStyle = hexA(col.dark, 0.9);
+            c.fill();
+            c.restore();
+
+            // ── Translucent glass slab body ──
+            roundRectPath(c, 0, 0, w, h, r);
+            const body = c.createLinearGradient(0, 0, 0, h);
+            body.addColorStop(0, hexA(col.pastel, 0.52));
+            body.addColorStop(0.45, hexA(col.mid, 0.48));
+            body.addColorStop(1, hexA(col.dark, 0.66));
+            c.fillStyle = body;
+            c.fill();
+
+            // ── Refraction: inverted backdrop band + far wall of the slab ──
+            c.save();
+            roundRectPath(c, s(2), s(2), w - s(4), h - s(4), Math.max(1, r - s(1)));
+            c.clip();
+            const refr = c.createLinearGradient(0, h, 0, 0);
+            refr.addColorStop(0, 'rgba(255,255,255,0.10)');
+            refr.addColorStop(0.35, 'rgba(255,255,255,0.02)');
+            refr.addColorStop(1, 'rgba(0,0,0,0.14)');
+            c.fillStyle = refr;
+            c.fillRect(s(2), s(2), w - s(4), h - s(4));
+            roundRectPath(c, s(3.5), s(4), w - s(7), h - s(8), Math.max(1, r - s(2)));
+            c.strokeStyle = 'rgba(255,255,255,0.14)';
+            c.lineWidth = s(1.2);
+            c.stroke();
+            // caustic: light focused through the slab pools along the bottom
+            c.globalCompositeOperation = 'lighter';
+            const caus = c.createRadialGradient(w / 2, h * 0.9, 0, w / 2, h * 0.9, w * 0.42);
+            caus.addColorStop(0, hexA(col.pastel, 0.40));
+            caus.addColorStop(0.5, hexA(col.mid, 0.14));
+            caus.addColorStop(1, 'rgba(0,0,0,0)');
+            c.beginPath();
+            c.ellipse(w / 2, h * 0.9, w * 0.42, h * 0.30, 0, 0, Math.PI * 2);
+            c.fillStyle = caus;
+            c.fill();
+            c.restore();
+
+            // ── Diagonal glare streaks ──
+            c.save();
+            roundRectPath(c, 0, 0, w, h, r);
+            c.clip();
+            c.translate(w * 0.5, h * 0.5);
+            c.rotate(-0.5);
+            const g1 = c.createLinearGradient(-w * 0.45, 0, -w * 0.1, 0);
+            g1.addColorStop(0, 'rgba(255,255,255,0)');
+            g1.addColorStop(0.5, 'rgba(255,255,255,0.18)');
+            g1.addColorStop(1, 'rgba(255,255,255,0)');
+            c.fillStyle = g1;
+            c.fillRect(-w * 0.5, -h, w * 0.38, h * 2);
+            const g2 = c.createLinearGradient(-w * 0.05, 0, w * 0.14, 0);
+            g2.addColorStop(0, 'rgba(255,255,255,0)');
+            g2.addColorStop(0.5, 'rgba(255,255,255,0.28)');
+            g2.addColorStop(1, 'rgba(255,255,255,0)');
+            c.fillStyle = g2;
+            c.fillRect(-w * 0.06, -h, w * 0.2, h * 2);
+            c.restore();
+
+            // ── Top specular band + edge catch-light + glint ──
+            c.save();
+            roundRectPath(c, 0, 0, w, h, r);
+            c.clip();
+            const sh = h * 0.34;
+            const shine = c.createLinearGradient(0, 0, 0, sh);
+            shine.addColorStop(0, 'rgba(255,255,255,0.42)');
+            shine.addColorStop(0.6, 'rgba(255,255,255,0.10)');
+            shine.addColorStop(1, 'rgba(255,255,255,0)');
+            c.fillStyle = shine;
+            c.fillRect(0, 0, w, sh);
+            c.beginPath();
+            c.moveTo(r * 0.8, s(1.2));
+            c.lineTo(w - r * 0.8, s(1.2));
+            c.strokeStyle = 'rgba(255,255,255,0.75)';
+            c.lineWidth = s(1);
+            c.lineCap = 'round';
+            c.stroke();
+            const glint = c.createRadialGradient(w * 0.16, h * 0.18, 0, w * 0.16, h * 0.18, s(6));
+            glint.addColorStop(0, 'rgba(255,255,255,0.9)');
+            glint.addColorStop(1, 'rgba(255,255,255,0)');
+            c.fillStyle = glint;
+            c.beginPath();
+            c.arc(w * 0.16, h * 0.18, s(6), 0, Math.PI * 2);
+            c.fill();
+            c.restore();
+
+            // ── Chromatic dispersion fringes on the rim ──
+            c.save();
+            c.globalCompositeOperation = 'screen';
+            c.lineWidth = s(1.1);
+            roundRectPath(c, -s(0.7), -s(0.5), w, h, r);
+            c.strokeStyle = 'rgba(255,70,70,0.32)';
+            c.stroke();
+            roundRectPath(c, s(0.7), s(0.5), w, h, r);
+            c.strokeStyle = 'rgba(70,120,255,0.32)';
+            c.stroke();
+            roundRectPath(c, 0, 0, w, h, r);
+            c.strokeStyle = 'rgba(110,255,130,0.16)';
+            c.stroke();
+            c.restore();
+
+            // ── Bevel rim + outer border ──
+            roundRectPath(c, s(1), s(1), w - s(2), h - s(2), Math.max(1, r - s(0.5)));
+            const rim = c.createLinearGradient(0, 0, 0, h);
+            rim.addColorStop(0, 'rgba(255,255,255,0.55)');
+            rim.addColorStop(0.5, 'rgba(255,255,255,0.10)');
+            rim.addColorStop(1, hexA(col.pastel, 0.35));
+            c.strokeStyle = rim;
+            c.lineWidth = s(1.2);
+            c.stroke();
+            roundRectPath(c, 0, 0, w, h, r);
+            c.strokeStyle = 'rgba(0,0,0,0.30)';
+            c.lineWidth = s(1);
+            c.stroke();
+
+            // ── Empty divot sockets (filled balls drawn at runtime on top) ──
+            const { dR, spacing } = divotGeom();
+            const startX = w / 2 - spacing * (DIVOTS_PER_BRICK - 1) / 2;
+            for (let d = 0; d < DIVOTS_PER_BRICK; d++) {
+                drawRecess(c, startX + d * spacing, h / 2, dR, col);
+            }
+            return cvs;
+        }
+
+        // Glossy ball seated in a socket
+        function renderDivotBallSprite(name, R, outerR) {
+            const col = COLORS[name];
+            const { cvs, c } = makeSpriteCanvas(outerR * 2, outerR * 2);
+            const x = outerR, y = outerR;
+            // contact shadow ring
+            const ring = c.createRadialGradient(x, y, R * 0.7, x, y, outerR);
+            ring.addColorStop(0, 'rgba(0,0,0,0.40)');
+            ring.addColorStop(1, 'rgba(0,0,0,0)');
+            c.beginPath();
+            c.arc(x, y, outerR, 0, Math.PI * 2);
+            c.fillStyle = ring;
+            c.fill();
+            // sphere
+            const g = c.createRadialGradient(x - R * 0.3, y - R * 0.35, R * 0.08, x, y, R);
+            g.addColorStop(0, '#ffffff');
+            g.addColorStop(0.2, col.pastel);
+            g.addColorStop(0.7, col.mid);
+            g.addColorStop(1, col.dark);
+            c.beginPath();
+            c.arc(x, y, R, 0, Math.PI * 2);
+            c.fillStyle = g;
+            c.fill();
+            // specular dot
+            const spec = c.createRadialGradient(x - R * 0.22, y - R * 0.28, 0, x - R * 0.22, y - R * 0.28, R * 0.32);
+            spec.addColorStop(0, 'rgba(255,255,255,0.85)');
+            spec.addColorStop(1, 'rgba(255,255,255,0)');
+            c.beginPath();
+            c.arc(x - R * 0.22, y - R * 0.28, R * 0.32, 0, Math.PI * 2);
+            c.fillStyle = spec;
+            c.fill();
+            // bright rim
+            c.beginPath();
+            c.arc(x, y, R, 0, Math.PI * 2);
+            c.strokeStyle = 'rgba(255,255,255,0.35)';
+            c.lineWidth = s(1);
+            c.stroke();
+            return cvs;
+        }
+
+        function renderFlyBallSprite(name, R, outerR) {
+            const col = COLORS[name];
+            const { cvs, c } = makeSpriteCanvas(outerR * 2, outerR * 2);
+            const x = outerR, y = outerR;
+            const g = c.createRadialGradient(x - R * 0.3, y - R * 0.3, 0, x, y, R);
+            g.addColorStop(0, '#fff');
+            g.addColorStop(0.4, col.pastel);
+            g.addColorStop(1, col.dark);
+            c.beginPath();
+            c.arc(x, y, R, 0, Math.PI * 2);
+            c.fillStyle = g;
+            c.fill();
+            return cvs;
+        }
+
+        function buildSprites() {
+            const w = brickW - s(BRICK_GAP);
+            const h = brickH - s(BRICK_GAP);
+            const pad = s(10);
+            const { dR } = divotGeom();
+            const ballR = dR + s(2.5);
+            const flyR = s(BALL_RADIUS) + s(1);
+            for (const name of COLOR_NAMES) {
+                sprites[name] = {
+                    brick: renderBrickSprite(name, w, h, pad),
+                    ball: renderDivotBallSprite(name, dR + s(0.5), ballR),
+                    flyBall: renderFlyBallSprite(name, s(BALL_RADIUS), flyR),
+                    pad, w, h, ballR, flyR,
+                };
+            }
+        }
+
         // ─── Game Init ───
         function initGame() {
+            if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
             initPool();
             initParticles();
             score = 0;
@@ -499,6 +842,10 @@
             initGrid();
             initBuckets();
             initPegs();
+            buildSprites();
+            layoutReady = true;
+            pushIntervalCur = pushIntervalFrames();
+            pushTimer = pushIntervalCur + 300; // grace period before first pushed row
             gameState = 'playing';
             overlay.classList.remove('active');
             startPanel.classList.remove('visible');
@@ -507,44 +854,134 @@
 
         function endGame() {
             gameState = 'gameover';
+            if (score > bestScore) {
+                bestScore = score;
+                try { localStorage.setItem('plinkoBricksBest', String(bestScore)); } catch (e) {}
+            }
             finalScoreEl.textContent = score;
             finalLevelEl.textContent = 'Level ' + level;
+            bestScoreEl.textContent = 'Best: ' + bestScore;
             overlay.classList.add('active');
             gameOverPanel.classList.add('visible');
         }
 
-        // ─── Input ───
-        function getCanvasPos(e) {
-            const rect = canvas.getBoundingClientRect();
-            const clientX = e.touches ? e.touches[0].clientX : e.clientX;
-            const clientY = e.touches ? e.touches[0].clientY : e.clientY;
-            return { x: clientX - rect.left, y: clientY - rect.top };
+        // Rescale live game objects when the window size / DPR changes mid-game
+        function relayout(oldScale) {
+            if (!oldScale || !isFinite(oldScale) || oldScale === scale && layoutReady === false) return;
+            const ratio = scale / oldScale;
+            computeGridMetrics();
+            for (const brick of bricks) {
+                brick.x = gridOffsetX + brick.col * brickW;
+                brick.w = brickW - s(BRICK_GAP);
+                brick.h = brickH - s(BRICK_GAP);
+                brick.ty = gridStartY + brick.row * brickH;
+                brick.y = brick.ty;
+            }
+            layoutBuckets();
+            layoutPegs();
+            for (const b of ballPool) {
+                if (!b.active) continue;
+                b.x *= ratio; b.y *= ratio;
+                b.vx *= ratio; b.vy *= ratio;
+                b.radius = s(BALL_RADIUS);
+            }
+            for (const p of particles) {
+                if (!p.active) continue;
+                p.x *= ratio; p.y *= ratio;
+                p.vx *= ratio; p.vy *= ratio;
+                p.size *= ratio;
+            }
+            for (const pop of comboPopups) {
+                pop.x *= ratio;
+                pop.y *= ratio;
+            }
+            buildSprites();
         }
 
-        function handleClick(e) {
-            if (gameState !== 'playing') return;
-            const pos = getCanvasPos(e);
-
+        // ─── Input ───
+        function bucketAt(x, y) {
             for (const bucket of buckets) {
-                if (pos.x >= bucket.x && pos.x <= bucket.x + bucket.w &&
-                    pos.y >= bucket.y && pos.y <= bucket.y + bucket.h) {
-                    if (bucket.ammo <= 0 && !activePerks.fire) continue;
-                    bucket.streaming = true;
-                    bucket.streamDuration = 0;
-                    bucket.streamTimer = 0;
-                    bucket.tweenDir = 1;
-                    bucket.tweenScale = 1.2;
-                    // Aim: tap position within bucket sets horizontal angle
-                    const tapRatio = (pos.x - bucket.x) / bucket.w; // 0=left, 1=right
-                    bucket.aimAngle = (tapRatio - 0.5) * 2; // -1 to +1
+                if (x >= bucket.x && x <= bucket.x + bucket.w &&
+                    y >= bucket.y && y <= bucket.y + bucket.h) {
+                    return bucket;
                 }
             }
+            return null;
         }
 
-        canvas.addEventListener('click', handleClick);
+        function fireBucket(bucket, aim, kb) {
+            if (bucket.ammo <= 0 && activePerks.fire <= 0) return;
+            bucket.streaming = true;
+            bucket.streamDuration = 0;
+            bucket.streamTimer = 0;
+            bucket.tweenDir = 1;
+            bucket.tweenScale = 1.2;
+            bucket.aimAngle = Math.max(-1, Math.min(1, aim));
+            bucket.kb = !!kb;
+        }
+
+        function pointerFire(x, y) {
+            const bucket = bucketAt(x, y);
+            if (!bucket) return;
+            // Aim: tap position within bucket sets horizontal angle
+            const tapRatio = (x - bucket.x) / bucket.w; // 0=left, 1=right
+            fireBucket(bucket, (tapRatio - 0.5) * 2, false);
+        }
+
+        canvas.addEventListener('click', (e) => {
+            if (gameState !== 'playing') return;
+            const rect = canvas.getBoundingClientRect();
+            pointerFire(e.clientX - rect.left, e.clientY - rect.top);
+        });
+
         canvas.addEventListener('touchstart', (e) => {
             e.preventDefault();
-            handleClick(e);
+            if (gameState !== 'playing') return;
+            const rect = canvas.getBoundingClientRect();
+            for (let i = 0; i < e.changedTouches.length; i++) {
+                const t = e.changedTouches[i];
+                pointerFire(t.clientX - rect.left, t.clientY - rect.top);
+            }
+        }, { passive: false });
+
+        canvas.addEventListener('mousemove', (e) => {
+            if (gameState !== 'playing') { canvas.style.cursor = 'default'; return; }
+            const rect = canvas.getBoundingClientRect();
+            canvas.style.cursor = bucketAt(e.clientX - rect.left, e.clientY - rect.top) ? 'pointer' : 'default';
+        });
+
+        // ─── Keyboard ───
+        const keyState = {};
+        const BUCKET_KEYS = {
+            Digit1: 0, Digit2: 1, Digit3: 2, Digit4: 3, Digit5: 4,
+            Numpad1: 0, Numpad2: 1, Numpad3: 2, Numpad4: 3, Numpad5: 4,
+        };
+
+        function keyboardAim() {
+            const left = keyState.ArrowLeft || keyState.KeyA;
+            const right = keyState.ArrowRight || keyState.KeyD;
+            return (right ? 0.7 : 0) - (left ? 0.7 : 0);
+        }
+
+        window.addEventListener('keydown', (e) => {
+            keyState[e.code] = true;
+            if (gameState !== 'playing') {
+                if (e.code === 'Enter' || e.code === 'Space') {
+                    e.preventDefault();
+                    initGame();
+                }
+                return;
+            }
+            if (e.code === 'ArrowLeft' || e.code === 'ArrowRight' || e.code === 'Space') {
+                e.preventDefault(); // stop page scroll
+            }
+            if (e.code in BUCKET_KEYS && !e.repeat) {
+                const bucket = buckets[BUCKET_KEYS[e.code]];
+                if (bucket) fireBucket(bucket, keyboardAim(), true);
+            }
+        });
+        window.addEventListener('keyup', (e) => {
+            keyState[e.code] = false;
         });
 
         document.getElementById('startBtn').addEventListener('click', initGame);
@@ -554,7 +991,6 @@
         const GRAVITY = 0.15;
         const BALL_RADIUS = 4;
         const BOUNCE_DAMP = 0.6;
-
 
         function update() {
             if (gameState !== 'playing') return;
@@ -585,6 +1021,7 @@
 
                 // Stream balls (consumes ammo, or free with fire perk)
                 if (bucket.streaming) {
+                    if (bucket.kb) bucket.aimAngle = keyboardAim(); // live aim from arrow keys
                     bucket.streamTimer++;
                     bucket.streamDuration++;
                     if (bucket.streamTimer >= bucket.streamInterval) {
@@ -773,9 +1210,12 @@
                 if (p.life <= 0) p.active = false;
             }
 
-            // Brick pulse timer & pop timer
+            // Brick pulse timer, pop timer & row-shift animation
             for (const brick of bricks) {
                 if (brick.pulseTimer > 0) brick.pulseTimer--;
+                const dy = brick.ty - brick.y;
+                if (Math.abs(dy) > 0.5) brick.y += dy * 0.2;
+                else brick.y = brick.ty;
                 if (brick.popTimer > 0) {
                     brick.popTimer--;
                     if (brick.popTimer <= 0) {
@@ -788,29 +1228,28 @@
                 }
             }
 
+            // Row pressure: a new row slides in periodically, faster at higher levels
+            pushTimer--;
+            if (pushTimer <= 0) {
+                pushRow(true);
+                pushIntervalCur = pushIntervalFrames();
+                pushTimer = pushIntervalCur;
+            }
+
+            // Handle popped bricks: row clears, refills, fail check
+            updateRows();
+
             // Check if a color was fully cleared — swap bucket
             syncBucketColors();
-
-            // Check row clears
-            checkRowCleared();
         }
 
         // ─── Drawing ───
         function drawRoundRect(x, y, w, h, r) {
-            ctx.beginPath();
-            ctx.moveTo(x + r, y);
-            ctx.lineTo(x + w - r, y);
-            ctx.quadraticCurveTo(x + w, y, x + w, y + r);
-            ctx.lineTo(x + w, y + h - r);
-            ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
-            ctx.lineTo(x + r, y + h);
-            ctx.quadraticCurveTo(x, y + h, x, y + h - r);
-            ctx.lineTo(x, y + r);
-            ctx.quadraticCurveTo(x, y, x + r, y);
-            ctx.closePath();
+            roundRectPath(ctx, x, y, w, h, r);
         }
 
         function draw() {
+            ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
             ctx.save();
             ctx.clearRect(0, 0, W, H);
 
@@ -824,7 +1263,7 @@
             // Apply screen shake
             ctx.translate(screenShakeX, screenShakeY);
 
-            // Draw buckets (iOS 26 liquid glass style, synced with grid)
+            // Draw buckets
             for (const bucket of buckets) {
                 ctx.save();
                 const cx = bucket.x + bucket.w / 2;
@@ -994,10 +1433,42 @@
                 }
             }
 
-            // Draw bricks (iOS 26 liquid glass with centered divots)
+            // Incoming-row progress bar (fills as the next row approaches)
+            if (gameState === 'playing') {
+                const prog = Math.max(0, Math.min(1, 1 - pushTimer / pushIntervalCur));
+                ctx.fillStyle = 'rgba(255,255,255,0.08)';
+                ctx.fillRect(s(8), gridStartY - s(10), W - s(16), s(3));
+                ctx.fillStyle = prog > 0.75 ? 'rgba(255,120,120,0.5)' : 'rgba(255,255,255,0.22)';
+                ctx.fillRect(s(8), gridStartY - s(10), (W - s(16)) * prog, s(3));
+            }
+
+            // Danger line when the stack is within one row of losing
+            if (gameState === 'playing') {
+                let danger = false;
+                const fy = failY();
+                for (const brick of bricks) {
+                    if (brick.ty + brick.h > fy - brickH) { danger = true; break; }
+                }
+                if (danger) {
+                    ctx.save();
+                    ctx.globalAlpha = 0.35 + 0.3 * Math.sin(Date.now() / 150);
+                    ctx.strokeStyle = '#ff5555';
+                    ctx.lineWidth = s(2);
+                    ctx.setLineDash([s(8), s(6)]);
+                    ctx.beginPath();
+                    ctx.moveTo(0, fy);
+                    ctx.lineTo(W, fy);
+                    ctx.stroke();
+                    ctx.restore();
+                }
+            }
+
+            // Draw bricks (pre-baked glass sprites)
             const now = Date.now() / 1000;
             for (const brick of bricks) {
                 if (!brick.active) continue;
+                const spr = sprites[brick.colorName];
+                if (!spr) continue;
 
                 ctx.save();
                 let popScale = 1;
@@ -1019,187 +1490,33 @@
                     ctx.translate(-bcx, -bcy);
                 }
 
-                const bR = s(16); // iOS 26 generous radius
-                const col = COLORS[brick.colorName];
+                ctx.drawImage(spr.brick,
+                    brick.x - spr.pad, brick.y - spr.pad,
+                    spr.w + spr.pad * 2, spr.h + spr.pad * 2);
 
-                // ── Drop shadow ──
-                ctx.shadowColor = 'rgba(0,0,0,0.25)';
-                ctx.shadowBlur = s(10);
-                ctx.shadowOffsetY = s(4);
-                drawRoundRect(brick.x, brick.y, brick.w, brick.h, bR);
-                ctx.fillStyle = col.dark;
-                ctx.fill();
-                ctx.shadowColor = 'transparent';
-                ctx.shadowBlur = 0;
-                ctx.shadowOffsetY = 0;
-
-                // ── Glass body ──
-                drawRoundRect(brick.x, brick.y, brick.w, brick.h, bR);
-                const bodyGrad = ctx.createLinearGradient(brick.x, brick.y, brick.x, brick.y + brick.h);
-                bodyGrad.addColorStop(0, col.pastel);
-                bodyGrad.addColorStop(0.5, col.mid);
-                bodyGrad.addColorStop(1, col.dark);
-                ctx.fillStyle = bodyGrad;
-                ctx.fill();
-
-                // ── Frosted glass overlay ──
-                drawRoundRect(brick.x, brick.y, brick.w, brick.h, bR);
-                ctx.fillStyle = 'rgba(255,255,255,0.10)';
-                ctx.fill();
-
-                // ── Top specular band (liquid glass shine) ──
-                ctx.save();
-                drawRoundRect(brick.x, brick.y, brick.w, brick.h, bR);
-                ctx.clip();
-                const shineH = brick.h * 0.38;
-                const shineGrad = ctx.createLinearGradient(brick.x, brick.y, brick.x, brick.y + shineH);
-                shineGrad.addColorStop(0, 'rgba(255,255,255,0.50)');
-                shineGrad.addColorStop(0.5, 'rgba(255,255,255,0.18)');
-                shineGrad.addColorStop(1, 'rgba(255,255,255,0.0)');
-                ctx.fillStyle = shineGrad;
-                ctx.fillRect(brick.x, brick.y, brick.w, shineH);
-                ctx.restore();
-
-                // ── Inner highlight border (top/left light, bottom/right dark) ──
-                drawRoundRect(brick.x + s(1), brick.y + s(1), brick.w - s(2), brick.h - s(2), bR - s(0.5));
-                ctx.strokeStyle = 'rgba(255,255,255,0.30)';
-                ctx.lineWidth = s(1.5);
-                ctx.stroke();
-
-                // ── Outer border ──
-                drawRoundRect(brick.x, brick.y, brick.w, brick.h, bR);
-                ctx.strokeStyle = 'rgba(0,0,0,0.12)';
-                ctx.lineWidth = s(1);
-                ctx.stroke();
-
-                // ── Divots: perfectly centered and evenly spaced ──
-                const dR = s(10); // divot radius
-                const divotCY = brick.y + brick.h / 2; // vertically centered
-                // Evenly space divots: total span = (N-1)*spacing, centered in brick
-                const divotTotalSpan = (DIVOTS_PER_BRICK - 1) * (dR * 2.8);
-                const divotStartX = bcx - divotTotalSpan / 2;
-
+                // Filled sockets: seated glass balls drawn over the recesses
+                const { dR, spacing } = divotGeom();
+                const startX = bcx - spacing * (DIVOTS_PER_BRICK - 1) / 2;
                 for (let d = 0; d < DIVOTS_PER_BRICK; d++) {
-                    const dx = divotStartX + d * (dR * 2.8);
-                    const dy = divotCY;
-
-                    if (brick.divots[d]) {
-                        // ── Filled: ball seated in recess ──
-
-                        // Shadow ring around ball
-                        ctx.beginPath();
-                        ctx.arc(dx, dy, dR + s(2), 0, Math.PI * 2);
-                        const ringGrad = ctx.createRadialGradient(dx, dy, dR * 0.7, dx, dy, dR + s(2));
-                        ringGrad.addColorStop(0, 'rgba(0,0,0,0.4)');
-                        ringGrad.addColorStop(1, 'rgba(0,0,0,0)');
-                        ctx.fillStyle = ringGrad;
-                        ctx.fill();
-
-                        // Ball sphere
-                        const bGrad = ctx.createRadialGradient(
-                            dx - dR * 0.3, dy - dR * 0.35, dR * 0.08,
-                            dx, dy, dR
-                        );
-                        bGrad.addColorStop(0, '#ffffff');
-                        bGrad.addColorStop(0.2, col.pastel);
-                        bGrad.addColorStop(0.7, col.mid);
-                        bGrad.addColorStop(1, col.dark);
-                        ctx.beginPath();
-                        ctx.arc(dx, dy, dR, 0, Math.PI * 2);
-                        ctx.fillStyle = bGrad;
-                        ctx.fill();
-
-                        // Specular dot
-                        const specR = dR * 0.32;
-                        const specGrad = ctx.createRadialGradient(
-                            dx - dR * 0.22, dy - dR * 0.28, 0,
-                            dx - dR * 0.22, dy - dR * 0.28, specR
-                        );
-                        specGrad.addColorStop(0, 'rgba(255,255,255,0.85)');
-                        specGrad.addColorStop(1, 'rgba(255,255,255,0)');
-                        ctx.beginPath();
-                        ctx.arc(dx - dR * 0.22, dy - dR * 0.28, specR, 0, Math.PI * 2);
-                        ctx.fillStyle = specGrad;
-                        ctx.fill();
-
-                        // Thin bright rim
-                        ctx.beginPath();
-                        ctx.arc(dx, dy, dR, 0, Math.PI * 2);
-                        ctx.strokeStyle = 'rgba(255,255,255,0.35)';
-                        ctx.lineWidth = s(1);
-                        ctx.stroke();
-
-                    } else {
-                        // ── Empty: deep physical recess ──
-
-                        // Outer bevel lip
-                        ctx.beginPath();
-                        ctx.arc(dx, dy, dR + s(2), 0, Math.PI * 2);
-                        const lipGrad = ctx.createLinearGradient(
-                            dx - dR, dy - dR, dx + dR, dy + dR
-                        );
-                        lipGrad.addColorStop(0, 'rgba(255,255,255,0.28)');
-                        lipGrad.addColorStop(0.45, 'rgba(255,255,255,0.05)');
-                        lipGrad.addColorStop(0.55, 'rgba(0,0,0,0.08)');
-                        lipGrad.addColorStop(1, 'rgba(0,0,0,0.30)');
-                        ctx.fillStyle = lipGrad;
-                        ctx.fill();
-
-                        // Deep cavity
-                        const cavGrad = ctx.createRadialGradient(
-                            dx + dR * 0.12, dy + dR * 0.15, 0,
-                            dx, dy, dR
-                        );
-                        cavGrad.addColorStop(0, 'rgba(0,0,0,0.55)');
-                        cavGrad.addColorStop(0.5, 'rgba(0,0,0,0.35)');
-                        cavGrad.addColorStop(0.85, col.dark);
-                        cavGrad.addColorStop(1, col.mid);
-                        ctx.beginPath();
-                        ctx.arc(dx, dy, dR, 0, Math.PI * 2);
-                        ctx.fillStyle = cavGrad;
-                        ctx.fill();
-
-                        // Inner concave light crescent (top-left)
-                        const crescGrad = ctx.createRadialGradient(
-                            dx - dR * 0.25, dy - dR * 0.3, 0,
-                            dx, dy, dR * 0.8
-                        );
-                        crescGrad.addColorStop(0, 'rgba(255,255,255,0.12)');
-                        crescGrad.addColorStop(0.5, 'rgba(255,255,255,0.02)');
-                        crescGrad.addColorStop(1, 'rgba(0,0,0,0)');
-                        ctx.beginPath();
-                        ctx.arc(dx, dy, dR * 0.8, 0, Math.PI * 2);
-                        ctx.fillStyle = crescGrad;
-                        ctx.fill();
-
-                        // Inner ring bevel
-                        ctx.beginPath();
-                        ctx.arc(dx, dy, dR, 0, Math.PI * 2);
-                        ctx.strokeStyle = 'rgba(0,0,0,0.3)';
-                        ctx.lineWidth = s(1.5);
-                        ctx.stroke();
-                    }
+                    if (!brick.divots[d]) continue;
+                    const dx = startX + d * spacing;
+                    ctx.drawImage(spr.ball,
+                        dx - spr.ballR, bcy - spr.ballR,
+                        spr.ballR * 2, spr.ballR * 2);
                 }
 
                 ctx.restore();
             }
 
-            // Draw balls
+            // Draw balls (cached sprites)
             for (let i = 0; i < ballPool.length; i++) {
                 const b = ballPool[i];
                 if (!b.active) continue;
-
-                ctx.beginPath();
-                ctx.arc(b.x, b.y, b.radius, 0, Math.PI * 2);
-                const ballGrad = ctx.createRadialGradient(
-                    b.x - b.radius * 0.3, b.y - b.radius * 0.3, 0,
-                    b.x, b.y, b.radius
-                );
-                ballGrad.addColorStop(0, '#fff');
-                ballGrad.addColorStop(0.4, b.color);
-                ballGrad.addColorStop(1, COLORS[b.colorName].dark);
-                ctx.fillStyle = ballGrad;
-                ctx.fill();
+                const spr = sprites[b.colorName];
+                if (!spr) continue;
+                ctx.drawImage(spr.flyBall,
+                    b.x - spr.flyR, b.y - spr.flyR,
+                    spr.flyR * 2, spr.flyR * 2);
             }
 
             // Draw particles
@@ -1277,14 +1594,25 @@
             ctx.restore();
         }
 
-        // ─── Game Loop ───
-        function loop() {
-            update();
+        // ─── Game Loop (fixed timestep — consistent speed on 60/120/144Hz) ───
+        const STEP = 1000 / 60;
+        let lastTime = performance.now();
+        let accumulator = 0;
+
+        function loop(now) {
+            accumulator += now - lastTime;
+            lastTime = now;
+            if (accumulator > 250) accumulator = 250; // clamp after tab-switch
+            while (accumulator >= STEP) {
+                update();
+                accumulator -= STEP;
+            }
             draw();
             requestAnimationFrame(loop);
         }
 
-        loop();
+        resize();
+        requestAnimationFrame(loop);
     })();
     </script>
 </body>
